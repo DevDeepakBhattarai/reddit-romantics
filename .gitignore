@@ -1,0 +1,13 @@
+*/.venv/*
+*/.venv
+
+*/__pycache__/*
+*/__pycache__
+
+*/.cache/*
+*/.cache
+**/*.mp4
+.env
+output/*
+*/output/*
+*/models/*
