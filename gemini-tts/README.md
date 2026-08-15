@@ -1,132 +1,96 @@
-# Gemini TTS Implementation
+# Gemini TTS
 
-This folder contains the Google Gemini Text-to-Speech implementation that replaces the CSM TTS system in the automation workflow.
+This folder contains the existing Gemini text-to-speech backend used by the main Reddit Romantics pipeline.
 
-## Features
+## Recommended usage
 
-- **High-quality speech synthesis** using Google's Gemini 2.5 Flash TTS model
-- **Single speaker setup** with multiple voice options
-- **Seamless integration** with the existing automation pipeline
-- **Same interface** as the previous CSM system for easy migration
+For normal use, run Gemini through the repository UI or shared CLI rather than invoking this folder directly:
 
-## Setup
+```powershell
+# Browser UI
+.\.venv\Scripts\python.exe ..\app.py
 
-1. **Install Dependencies**
-
-   ```bash
-   pip install google-genai>=1.16.1 python-dotenv
-   ```
-
-   Or run the setup script:
-
-   ```bash
-   setup.bat
-   ```
-
-2. **Configure Google API Key**
-
-   **Option A: Using .env file (Recommended)**
-
-   ```bash
-   # The setup script will create .env file for you
-   # Edit .env and replace 'your_google_api_key_here' with your actual key
-   ```
-
-   **Option B: Environment Variable**
-
-   ```bash
-   set GOOGLE_API_KEY=your_api_key_here
-   ```
-
-3. **Get Your API Key**
-   - Visit: https://aistudio.google.com/app/apikey
-   - Create a new API key
-   - Copy it to your .env file
-
-## Available Voices
-
-- **Kore** (default) - Natural, balanced voice
-- **Leda** - Soft, gentle voice
-- **Charon** - Deep, authoritative voice
-- **Puck** - Energetic, expressive voice
-
-## Usage
-
-### Standalone Usage
-
-```bash
-python gemini_tts.py --text_file your_text.txt --voice Kore --preprocess --high_quality
+# CLI
+.\.venv\Scripts\python.exe ..\main.py run --story-file ..\input\my_story.txt --tts gemini --gemini-voice Kore
 ```
 
-### Integration with Automation
+The root pipeline handles audio paths, captions, background footage, and final rendering.
 
-The main automation script (`../process.bat`) automatically uses this Gemini TTS system. Just run:
+## Standalone usage
 
-```bash
-process.bat your_story.txt asmr
+The backend can still be run on its own:
+
+```powershell
+python gemini_tts.py --text_file test.txt --voice Kore --preprocess --high_quality
 ```
 
-### Quick Test
+Input files are read from `gemini-tts/input/` (with the repository `input/` folder retained as a fallback), and generated WAV files are written to `gemini-tts/output/`.
 
-```bash
-test.bat
+## Configuration
+
+Set your API key in the repository root `.env`:
+
+```dotenv
+GOOGLE_API_KEY=your_key_here
 ```
 
-## Folder Structure
+The default model is the current Gemini Flash TTS model used by the pipeline:
 
+```text
+gemini-3.1-flash-tts-preview
 ```
-gemini-tts/
-├── gemini_tts.py          # Main TTS script
-├── requirements.txt       # Python dependencies
-├── setup.bat             # Setup script
-├── test.bat              # Test script
-├── env_template.txt      # Template for .env file
-├── .env                  # Your API key (created by setup)
-├── input/                # Input text files
-├── output/               # Generated audio files
-└── README.md            # This file
+
+You can now override it without editing Python:
+
+```powershell
+python gemini_tts.py --text_file test.txt --model YOUR_MODEL_NAME --voice Kore
 ```
+
+or:
+
+```dotenv
+GEMINI_TTS_MODEL=YOUR_MODEL_NAME
+```
+
+The Gradio UI exposes the model name as an editable field as well.
+
+## Voice selection
+
+The main Gradio UI exposes all 30 currently documented prebuilt Gemini TTS voice names. The standalone script accepts any supported voice through `--voice`.
+
+## Semantic long-story chunking
+
+Long Gemini narration is always split automatically into chunks targeting about **180 seconds** of speech. The splitter is narration-aware and recursive: it keeps complete paragraphs together whenever possible, then falls back to sentence boundaries, then clauses, and finally word boundaries for unusually long sentences. It never intentionally cuts through a word.
+
+A line containing:
+
+```text
+-------------
+```
+
+is still treated as an explicit hard chunk boundary for compatibility. `--no_split` now means "ignore those explicit separator lines"; it does **not** disable automatic safe chunking.
+
+Change the target when needed:
+
+```powershell
+python gemini_tts.py --text_file test.txt --chunk-seconds 180
+```
+
+Generated PCM WAV chunks are concatenated without re-encoding. The Gemini call also uses a consistent narration instruction for every chunk and retries transient server failures.
+
+VibeVoice uses a different path in the main pipeline and intentionally receives the complete story in one generation.
 
 ## Arguments
 
-- `--text_file`: Input text file name (required)
-- `--voice`: Voice to use (default: Kore)
-- `--preprocess`: Apply text preprocessing for better speech
-- `--high_quality`: Use high-quality settings
-- `--api_key`: Google API key (optional if set in .env)
-
-## API Key Security
-
-The `.env` file approach is recommended because:
-
-- ✅ **Secure** - API key stays in local file
-- ✅ **Persistent** - No need to set environment variables each time
-- ✅ **Convenient** - Automatically loaded by the script
-- ✅ **Standard** - Industry standard for configuration
-
-**Important**: Never commit your `.env` file to version control!
-
-## Advantages over CSM
-
-- ✅ **No local model download** required (API-based)
-- ✅ **Faster setup** - just install one package
-- ✅ **Better quality** - Uses Google's latest TTS technology
-- ✅ **More reliable** - No GPU/hardware dependencies
-- ✅ **Natural sounding** voices with emotional expression
-- ✅ **Consistent results** across different machines
-
-## Example
-
-```bash
-# Run setup
-setup.bat
-
-# Edit .env file with your API key
-
-# Test the setup
-test.bat
-
-# Use with your content
-echo "This is a test of Gemini TTS." > input/test.txt
-python gemini_tts.py --text_file test.txt --voice Kore --preprocess
+```text
+--text_file       input text filename (required)
+--voice           Gemini prebuilt voice name (default: Kore)
+--model           Gemini TTS model name
+--preprocess      apply the repository's text cleanup
+--api_key         optional API key override
+--high_quality    retained compatibility flag
+--no_split        ignore explicit ------------- boundaries (semantic chunking stays enabled)
+--chunk-seconds    target speech duration per semantic chunk (default: 180)
+--estimated-wpm    conservative speech-rate estimate used for sizing (default: 140)
+--max-retries      retries for transient Gemini API failures (default: 3)
 ```
