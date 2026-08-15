@@ -1,13 +1,27 @@
-*/.venv/*
-*/.venv
+# Local Python environments
+.venv/
+.whisperx-venv/
+*/.venv/
 
-*/__pycache__/*
-*/__pycache__
+# Python caches
+__pycache__/
+*/__pycache__/
+*.py[cod]
+.pytest_cache/
 
-*/.cache/*
-*/.cache
-**/*.mp4
+# Downloaded/model runtime state
+vendor/
+.work/
+*/.cache/
+*/models/
+
+# Secrets
 .env
+
+# Generated media/output
+*.mp4
 output/*
 */output/*
-*/models/*
+
+# Keep placeholder files if added later
+!output/.gitkeep

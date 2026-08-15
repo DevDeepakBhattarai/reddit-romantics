@@ -1,0 +1,6 @@
+# Application/UI dependencies. VibeVoice's model dependencies are installed from the pinned vendor runtime by setup.ps1.
+google-genai>=2.8.0
+python-dotenv>=1.0.1
+gradio==5.50.0
+soundfile>=0.13.1
+pytest>=8.3.0
