@@ -1,4 +1,4 @@
-Hello! This is a sample text file for testing the CSM text-to-speech conversion script.
+Hello! This is a sample text file for testing the Reddit Romantics text-to-speech automation pipeline.
 
 The script can convert any text file into high-quality speech audio. You can use it with a default voice, or provide a reference audio file to clone a specific voice.
 

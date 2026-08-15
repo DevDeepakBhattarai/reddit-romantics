@@ -24,15 +24,15 @@ Dialogue: 0,0:00:01.89,0:00:01.99,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}
 Dialogue: 0,0:00:01.99,0:00:02.39,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}This is a {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}sample{\r}{\fnVerdana}{\fs80}{\b1} text
 Dialogue: 0,0:00:02.39,0:00:02.45,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}This is a sample text
 Dialogue: 0,0:00:02.45,0:00:02.75,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}This is a sample {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}text{\r}{\fnVerdana}{\fs80}{\b1}
-Dialogue: 0,0:00:02.79,0:00:03.11,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}file{\r}{\fnVerdana}{\fs80}{\b1} for testing the CSM
-Dialogue: 0,0:00:03.11,0:00:03.25,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the CSM
-Dialogue: 0,0:00:03.25,0:00:03.48,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}for{\r}{\fnVerdana}{\fs80}{\b1} testing the CSM
-Dialogue: 0,0:00:03.48,0:00:03.56,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the CSM
-Dialogue: 0,0:00:03.56,0:00:04.02,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}testing{\r}{\fnVerdana}{\fs80}{\b1} the CSM
-Dialogue: 0,0:00:04.02,0:00:04.10,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the CSM
-Dialogue: 0,0:00:04.10,0:00:04.22,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}the{\r}{\fnVerdana}{\fs80}{\b1} CSM
-Dialogue: 0,0:00:04.22,0:00:04.30,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the CSM
-Dialogue: 0,0:00:04.30,0:00:05.04,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}CSM{\r}{\fnVerdana}{\fs80}{\b1}
+Dialogue: 0,0:00:02.79,0:00:03.11,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}file{\r}{\fnVerdana}{\fs80}{\b1} for testing the automation
+Dialogue: 0,0:00:03.11,0:00:03.25,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the automation
+Dialogue: 0,0:00:03.25,0:00:03.48,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}for{\r}{\fnVerdana}{\fs80}{\b1} testing the automation
+Dialogue: 0,0:00:03.48,0:00:03.56,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the automation
+Dialogue: 0,0:00:03.56,0:00:04.02,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}testing{\r}{\fnVerdana}{\fs80}{\b1} the automation
+Dialogue: 0,0:00:04.02,0:00:04.10,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the automation
+Dialogue: 0,0:00:04.10,0:00:04.22,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}the{\r}{\fnVerdana}{\fs80}{\b1} automation
+Dialogue: 0,0:00:04.22,0:00:04.30,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the automation
+Dialogue: 0,0:00:04.30,0:00:05.04,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}file for testing the {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}automation{\r}{\fnVerdana}{\fs80}{\b1}
 Dialogue: 0,0:00:05.14,0:00:05.96,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}text-to-speech{\r}{\fnVerdana}{\fs80}{\b1} conversion script.
 Dialogue: 0,0:00:05.96,0:00:06.06,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}text-to-speech conversion script.
 Dialogue: 0,0:00:06.06,0:00:06.54,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}text-to-speech {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}conversion{\r}{\fnVerdana}{\fs80}{\b1} script.

@@ -1,8 +1,0 @@
-Hello! This is a sample text file for testing the CSM text-to-speech conversion script.
-
-The script can convert any text file into high-quality speech audio. You can use it with a default voice, or provide a reference audio file to clone a specific voice.
-
-This technology uses advanced AI models to generate natural-sounding speech from text. The quality is quite impressive and can be used for various applications like audiobooks, voice assistants, or accessibility tools.
-
-Try experimenting with different texts and voice references to see what works best for your needs!
-

@@ -32,13 +32,13 @@ Dialogue: 0,0:00:02.11,0:00:02.17,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}
 Dialogue: 0,0:00:02.17,0:00:02.51,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}text file for {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}testing{\r}{\fnVerdana}{\fs80}{\b1} the
 Dialogue: 0,0:00:02.51,0:00:02.55,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}text file for testing the
 Dialogue: 0,0:00:02.55,0:00:02.61,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}text file for testing {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}the{\r}{\fnVerdana}{\fs80}{\b1}
-Dialogue: 0,0:00:02.67,0:00:03.17,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}CSM{\r}{\fnVerdana}{\fs80}{\b1} text-to-speech conversion script.
-Dialogue: 0,0:00:03.17,0:00:03.25,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM text-to-speech conversion script.
-Dialogue: 0,0:00:03.25,0:00:03.91,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}text-to-speech{\r}{\fnVerdana}{\fs80}{\b1} conversion script.
-Dialogue: 0,0:00:03.91,0:00:03.97,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM text-to-speech conversion script.
-Dialogue: 0,0:00:03.97,0:00:04.41,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM text-to-speech {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}conversion{\r}{\fnVerdana}{\fs80}{\b1} script.
-Dialogue: 0,0:00:04.41,0:00:04.46,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM text-to-speech conversion script.
-Dialogue: 0,0:00:04.46,0:00:04.78,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}CSM text-to-speech conversion {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}script.{\r}{\fnVerdana}{\fs80}{\b1}
+Dialogue: 0,0:00:02.67,0:00:03.17,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}automation{\r}{\fnVerdana}{\fs80}{\b1} text-to-speech conversion script.
+Dialogue: 0,0:00:03.17,0:00:03.25,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation text-to-speech conversion script.
+Dialogue: 0,0:00:03.25,0:00:03.91,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}text-to-speech{\r}{\fnVerdana}{\fs80}{\b1} conversion script.
+Dialogue: 0,0:00:03.91,0:00:03.97,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation text-to-speech conversion script.
+Dialogue: 0,0:00:03.97,0:00:04.41,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation text-to-speech {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}conversion{\r}{\fnVerdana}{\fs80}{\b1} script.
+Dialogue: 0,0:00:04.41,0:00:04.46,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation text-to-speech conversion script.
+Dialogue: 0,0:00:04.46,0:00:04.78,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}automation text-to-speech conversion {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}script.{\r}{\fnVerdana}{\fs80}{\b1}
 Dialogue: 0,0:00:07.14,0:00:07.24,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}{\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}The{\r}{\fnVerdana}{\fs80}{\b1} script can convert any
 Dialogue: 0,0:00:07.24,0:00:07.28,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}The script can convert any
 Dialogue: 0,0:00:07.28,0:00:07.58,Default,,0,0,0,,{\fnVerdana}{\fs80}{\b1}{\an5}The {\1c&H000000&\3c&H00FFFF&\bord12\shad0}{\3a&H00&}script{\r}{\fnVerdana}{\fs80}{\b1} can convert any
