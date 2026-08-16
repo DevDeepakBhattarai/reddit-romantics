@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from reddit_video import pipeline as pipeline_module
 from reddit_video.pipeline import (
     PipelineOptions,
     RedditVideoPipeline,
@@ -62,3 +63,111 @@ def test_narration_guard_allows_plausible_audio(tmp_path: Path):
     pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
     story = " ".join(["word"] * 100)
     pipeline._validate_narration_duration(story, 30.0)
+
+
+
+def test_gemini_rejects_story_with_more_than_two_speakers(tmp_path: Path):
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 0: A.\nSpeaker 1: B.\nSpeaker 2: C."
+
+    with pytest.raises(ValueError, match="at most 2"):
+        pipeline._generate_narration(
+            PipelineOptions(story_text=story, tts_engine="gemini"),
+            tmp_path / "story.txt",
+            story,
+            tmp_path / "out.wav",
+        )
+
+
+def test_vibevoice_pipeline_strips_decorators_and_maps_per_speaker_voices(tmp_path: Path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_generate(_root, text, output, **kwargs):
+        captured["text"] = text
+        captured.update(kwargs)
+        return output
+
+    monkeypatch.setattr(pipeline_module, "generate_vibevoice", fake_generate)
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 3: Hello. [laugh]\nSpeaker 8: Hi. <pause>"
+    options = PipelineOptions(
+        story_text=story,
+        tts_engine="vibevoice",
+        vibevoice_speaker_voices={3: "Alice", 8: "Frank"},
+    )
+
+    pipeline._generate_narration(options, tmp_path / "story.txt", story, tmp_path / "out.wav")
+
+    assert captured["text"] == "Speaker 0: Hello.\nSpeaker 1: Hi."
+    assert captured["speaker_names"] == {0: "Alice", 1: "Frank"}
+
+
+def test_fish_pipeline_uses_native_speaker_tokens_and_remaps_references(tmp_path: Path, monkeypatch):
+    captured: dict[str, object] = {}
+    ref_a = tmp_path / "a.wav"
+    ref_b = tmp_path / "b.wav"
+    ref_a.write_bytes(b"a")
+    ref_b.write_bytes(b"b")
+
+    def fake_generate(_root, text, output, **kwargs):
+        captured["text"] = text
+        captured.update(kwargs)
+        return output
+
+    monkeypatch.setattr(pipeline_module, "generate_fish_s2", fake_generate)
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 4: First. [giggle]\nSpeaker 9: Second. <laught>"
+    options = PipelineOptions(
+        story_text=story,
+        tts_engine="fish",
+        fish_speaker_references={4: (ref_a, "Reference A"), 9: (ref_b, "Reference B")},
+    )
+
+    pipeline._generate_narration(options, tmp_path / "story.txt", story, tmp_path / "out.wav")
+
+    assert captured["text"] == "<|speaker:0|>First. [chuckle]\n<|speaker:1|>Second. [laugh]"
+    assert captured["speaker_references"] == {
+        0: (ref_a, "Reference A"),
+        1: (ref_b, "Reference B"),
+    }
+
+
+def test_gemini_requires_voice_for_every_detected_speaker(tmp_path: Path):
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 0: Hello.\nSpeaker 1: Hi."
+    options = PipelineOptions(
+        story_text=story,
+        tts_engine="gemini",
+        gemini_speaker_voices={0: "Kore"},
+    )
+
+    with pytest.raises(ValueError, match="explicit voice preset.*Speaker 1"):
+        pipeline._generate_narration(options, tmp_path / "story.txt", story, tmp_path / "out.wav")
+
+
+def test_vibevoice_requires_preset_for_every_detected_speaker(tmp_path: Path):
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 0: Hello.\nSpeaker 1: Hi."
+    options = PipelineOptions(
+        story_text=story,
+        tts_engine="vibevoice",
+        vibevoice_speaker_voices={0: "Alice"},
+    )
+
+    with pytest.raises(ValueError, match="explicit preset.*Speaker 1"):
+        pipeline._generate_narration(options, tmp_path / "story.txt", story, tmp_path / "out.wav")
+
+
+def test_fish_never_allows_random_voice_for_detected_speaker(tmp_path: Path):
+    pipeline = RedditVideoPipeline(root=tmp_path, log=lambda _message: None)
+    story = "Speaker 0: Hello.\nSpeaker 1: Hi."
+    ref = tmp_path / "speaker0.wav"
+    ref.write_bytes(b"reference")
+    options = PipelineOptions(
+        story_text=story,
+        tts_engine="fish",
+        fish_speaker_references={0: (ref, "Reference transcript")},
+    )
+
+    with pytest.raises(ValueError, match="random model-selected voices are disabled.*Speaker 1"):
+        pipeline._generate_narration(options, tmp_path / "story.txt", story, tmp_path / "out.wav")

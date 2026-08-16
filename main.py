@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--story-text", default="", help="Story text directly on the command line")
     run.add_argument("--output-name", default="")
 
-    run.add_argument("--tts", choices=["gemini", "vibevoice"], default="gemini")
+    run.add_argument("--tts", choices=["gemini", "vibevoice", "fish"], default="gemini")
     run.add_argument("--gemini-voice", default="Kore")
     run.add_argument("--gemini-model", default="gemini-3.1-flash-tts-preview")
     run.add_argument("--no-gemini-preprocess", action="store_true")
@@ -38,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--vibevoice-seed", type=int, default=42)
     run.add_argument("--vibevoice-device", choices=["auto", "cuda", "cpu"], default="auto")
     run.add_argument("--vibevoice-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
+
+    run.add_argument("--fish-device", choices=["hybrid", "cpu", "cuda"], default="hybrid")
+    run.add_argument("--fish-gpu-layers", type=int, default=20)
+    run.add_argument("--fish-temperature", type=float, default=1.0)
+    run.add_argument("--fish-seed", type=int, default=42)
+    run.add_argument("--fish-reference-audio")
+    run.add_argument("--fish-reference-text", default="")
 
     run.add_argument("--background", default="videos/minecraft/minecraft.mp4")
     run.add_argument("--format", dest="output_format", choices=["shorts", "source"], default="shorts")
@@ -85,6 +92,12 @@ def run_pipeline(args: argparse.Namespace) -> int:
         vibevoice_seed=args.vibevoice_seed,
         vibevoice_device=args.vibevoice_device,
         vibevoice_dtype=args.vibevoice_dtype,
+        fish_device=args.fish_device,
+        fish_gpu_layers=args.fish_gpu_layers,
+        fish_temperature=args.fish_temperature,
+        fish_seed=args.fish_seed,
+        fish_reference_audio=args.fish_reference_audio,
+        fish_reference_text=args.fish_reference_text,
         background=args.background,
         output_format=args.output_format,
         randomize_background_start=not args.no_random_background_start,

@@ -8,20 +8,15 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from .captions import CAPTION_THEMES, convert_whisperx_json_to_ass
 from .tts import generate_gemini, generate_vibevoice
-from .tts_models import (
-    generate_chatterbox,
-    generate_fish_s2,
-    generate_higgs_tts3,
-    generate_magpie,
-    generate_step_editx,
-)
+from .tts_models import generate_fish_s2
+from .tts_text import prepare_text_for_provider, validate_speaker_count
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -42,6 +37,7 @@ class PipelineOptions:
     gemini_preprocess: bool = True
     gemini_split_on_separator: bool = True
     gemini_chunk_seconds: int = 180
+    gemini_speaker_voices: dict[int, str] = field(default_factory=dict)
 
     vibevoice_model: str = "microsoft/VibeVoice-1.5B"
     vibevoice_speaker: str = "Alice"
@@ -50,6 +46,7 @@ class PipelineOptions:
     vibevoice_seed: int = 42
     vibevoice_device: str = "auto"
     vibevoice_dtype: str = "auto"
+    vibevoice_speaker_voices: dict[int, str] = field(default_factory=dict)
 
     fish_device: str = "hybrid"
     fish_gpu_layers: int = 20
@@ -58,24 +55,7 @@ class PipelineOptions:
     fish_seed: int = 42
     fish_reference_audio: str | Path | None = None
     fish_reference_text: str = ""
-
-    step_reference_audio: str | Path | None = None
-    step_reference_text: str = ""
-    step_mode: str = "clone"
-
-    magpie_model: str = "nvidia/magpie_tts_multilingual_357m"
-    magpie_speaker: str = "John"
-    magpie_language: str = "en"
-    magpie_device: str = "auto"
-    magpie_use_cfg: bool = True
-    magpie_cfg_scale: float = 2.5
-
-    chatterbox_variant: str = "turbo"
-    chatterbox_device: str = "auto"
-    chatterbox_reference_audio: str | Path | None = None
-
-    higgs_model: str = "bosonai/higgs-audio-v3-tts-4b"
-    higgs_device: str = "auto"
+    fish_speaker_references: dict[int, tuple[str | Path, str]] = field(default_factory=dict)
 
     background: str | Path = "videos/minecraft/minecraft.mp4"
     output_format: str = "shorts"
@@ -192,53 +172,121 @@ class RedditVideoPipeline:
         audio_path: Path,
     ) -> Path:
         engine = options.tts_engine
+        if engine not in {"gemini", "vibevoice", "fish"}:
+            raise ValueError(
+                f"Unsupported TTS engine '{engine}'. This pipeline intentionally exposes only "
+                "Gemini, VibeVoice, and Fish Audio because multi-speaker generation is required."
+            )
+
+        speakers = validate_speaker_count(story_text, engine)
+        prepared_text, id_map = prepare_text_for_provider(story_text, engine)
+        explicit_speakers = bool(speakers)
+        original_ids = [speaker.speaker_id for speaker in speakers] or [0]
+        if not id_map:
+            id_map = {0: 0}
+
         if engine == "gemini":
-            self._stage(0.10, f"Generating Gemini TTS ({options.gemini_voice})")
+            if explicit_speakers:
+                missing = [
+                    speaker_id
+                    for speaker_id in original_ids
+                    if not options.gemini_speaker_voices.get(speaker_id, "").strip()
+                ]
+                if missing:
+                    raise ValueError(
+                        "Gemini requires an explicit voice preset for every detected speaker. Missing: "
+                        + ", ".join(f"Speaker {speaker_id}" for speaker_id in missing)
+                    )
+            selected = {
+                speaker_id: options.gemini_speaker_voices.get(speaker_id, options.gemini_voice).strip()
+                for speaker_id in original_ids
+            }
+            if len(selected) == 1:
+                options.gemini_voice = next(iter(selected.values()))
+            self._stage(
+                0.10,
+                f"Generating Gemini TTS ({len(selected) or 1} speaker{'s' if len(selected) != 1 else ''})",
+            )
             return generate_gemini(
-                self.root, story_path, audio_path, voice=options.gemini_voice, model=options.gemini_model,
-                preprocess=options.gemini_preprocess, split_on_separator=options.gemini_split_on_separator,
-                chunk_seconds=options.gemini_chunk_seconds, log=self.log,
+                self.root,
+                story_path,
+                audio_path,
+                voice=options.gemini_voice,
+                model=options.gemini_model,
+                preprocess=options.gemini_preprocess,
+                split_on_separator=options.gemini_split_on_separator,
+                chunk_seconds=options.gemini_chunk_seconds,
+                log=self.log,
+                text=prepared_text,
+                speaker_voices=selected,
             )
+
         if engine == "vibevoice":
-            self._stage(0.10, f"Generating VibeVoice ({options.vibevoice_speaker}) in one pass")
+            if explicit_speakers:
+                missing = [
+                    speaker_id
+                    for speaker_id in original_ids
+                    if not options.vibevoice_speaker_voices.get(speaker_id, "").strip()
+                ]
+                if missing:
+                    raise ValueError(
+                        "VibeVoice requires an explicit preset for every detected speaker. Missing: "
+                        + ", ".join(f"Speaker {speaker_id}" for speaker_id in missing)
+                    )
+            selected_original = {
+                speaker_id: options.vibevoice_speaker_voices.get(speaker_id, options.vibevoice_speaker).strip()
+                for speaker_id in original_ids
+            }
+            selected = {id_map[speaker_id]: voice for speaker_id, voice in selected_original.items()}
+            self._stage(0.10, f"Generating VibeVoice ({len(selected)} speaker(s)) in one pass")
             return generate_vibevoice(
-                self.root, story_text, audio_path, model_id=options.vibevoice_model,
-                speaker_name=options.vibevoice_speaker, cfg_scale=options.vibevoice_cfg_scale,
-                diffusion_steps=options.vibevoice_diffusion_steps, seed=options.vibevoice_seed,
-                device=options.vibevoice_device, dtype_name=options.vibevoice_dtype, log=self.log,
+                self.root,
+                prepared_text,
+                audio_path,
+                model_id=options.vibevoice_model,
+                speaker_name=options.vibevoice_speaker,
+                speaker_names=selected,
+                cfg_scale=options.vibevoice_cfg_scale,
+                diffusion_steps=options.vibevoice_diffusion_steps,
+                seed=options.vibevoice_seed,
+                device=options.vibevoice_device,
+                dtype_name=options.vibevoice_dtype,
+                log=self.log,
             )
-        if engine == "fish":
-            self._stage(0.10, "Fish Audio: starting runtime and loading S2 Pro")
-            return generate_fish_s2(
-                self.root, story_text, audio_path, device=options.fish_device, gpu_layers=options.fish_gpu_layers,
-                half=options.fish_half, temperature=options.fish_temperature, seed=options.fish_seed,
-                reference_audio=options.fish_reference_audio, reference_text=options.fish_reference_text, log=self.log,
+
+        selected_refs = {
+            id_map[speaker_id]: reference
+            for speaker_id, reference in options.fish_speaker_references.items()
+            if speaker_id in id_map
+        }
+        if not explicit_speakers and not selected_refs and options.fish_reference_audio:
+            selected_refs[0] = (options.fish_reference_audio, options.fish_reference_text)
+        missing = [
+            speaker_id
+            for speaker_id in original_ids
+            if id_map[speaker_id] not in selected_refs
+        ]
+        if missing:
+            raise ValueError(
+                "Fish Audio requires an explicit saved preset or uploaded reference voice for every speaker; "
+                "random model-selected voices are disabled. Missing: "
+                + ", ".join(f"Speaker {speaker_id}" for speaker_id in missing)
             )
-        if engine == "step":
-            self._stage(0.10, "Step Audio: starting runtime and loading models")
-            return generate_step_editx(
-                self.root, story_text, audio_path, reference_audio=options.step_reference_audio,
-                reference_text=options.step_reference_text, mode=options.step_mode, log=self.log,
-            )
-        if engine == "magpie":
-            self._stage(0.10, f"Magpie: starting runtime and loading {options.magpie_speaker} voice")
-            return generate_magpie(
-                self.root, story_text, audio_path, model_id=options.magpie_model, speaker=options.magpie_speaker,
-                language=options.magpie_language, device=options.magpie_device, use_cfg=options.magpie_use_cfg,
-                cfg_scale=options.magpie_cfg_scale, log=self.log,
-            )
-        if engine == "chatterbox":
-            self._stage(0.10, f"Generating Chatterbox ({options.chatterbox_variant})")
-            return generate_chatterbox(
-                self.root, story_text, audio_path, variant=options.chatterbox_variant,
-                device=options.chatterbox_device, reference_audio=options.chatterbox_reference_audio, log=self.log,
-            )
-        if engine == "higgs":
-            self._stage(0.10, "Generating Higgs TTS 3")
-            return generate_higgs_tts3(
-                self.root, story_text, audio_path, model_id=options.higgs_model, device=options.higgs_device, log=self.log,
-            )
-        raise ValueError(f"Unknown TTS engine: {engine}")
+        self._stage(0.10, f"Fish Audio: starting S2 Pro for {len(speakers) or 1} speaker(s)")
+        return generate_fish_s2(
+            self.root,
+            prepared_text,
+            audio_path,
+            device=options.fish_device,
+            gpu_layers=options.fish_gpu_layers,
+            half=options.fish_half,
+            temperature=options.fish_temperature,
+            seed=options.fish_seed,
+            reference_audio=options.fish_reference_audio,
+            reference_text=options.fish_reference_text,
+            speaker_references=selected_refs,
+            log=self.log,
+        )
 
     def _validate_narration_duration(self, story_text: str, audio_duration: float) -> None:
         words = re.findall(r"\b[\w'-]+\b", story_text, flags=re.UNICODE)
