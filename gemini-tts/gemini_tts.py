@@ -44,6 +44,7 @@ SAMPLE_WIDTH = 2
 _SENTENCE_RE = re.compile(r".+?(?:[.!?]+(?:[\"'”’\)\]]+)?(?=\s+|$)|$)", re.DOTALL)
 _CLAUSE_SPLIT_RE = re.compile(r"(?<=[;:,—–])\s+")
 _EXPLICIT_SEPARATOR_RE = re.compile(r"(?m)^\s*-{5,}\s*$")
+_SPEAKER_TURN_RE = re.compile(r"^\s*Speaker\s+(\d+)\s*:\s*(.*)$", re.IGNORECASE)
 
 
 def setup_gemini_client(api_key: str | None = None):
@@ -142,6 +143,43 @@ def _split_oversized_text(text: str, max_chars: int, max_words: int) -> list[str
     return _merge_pieces(words, max_chars, max_words)
 
 
+def _split_dialogue_semantically(text: str, max_chars: int, max_words: int) -> list[str]:
+    """Chunk a speaker-labelled transcript without ever losing speaker boundaries."""
+    units: list[str] = []
+    current_speaker: int | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        match = _SPEAKER_TURN_RE.match(line)
+        if match:
+            current_speaker = int(match.group(1))
+            body = match.group(2).strip()
+        else:
+            body = line
+        if current_speaker is None:
+            current_speaker = 0
+        if not body:
+            continue
+        prefix = f"Speaker {current_speaker}: "
+        body_budget_chars = max(100, max_chars - len(prefix))
+        body_pieces = _split_oversized_text(body, body_budget_chars, max_words)
+        units.extend(prefix + piece for piece in body_pieces if piece)
+
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        candidate = unit if not current else f"{current}\n{unit}"
+        if current and not _fits_chunk(candidate, max_chars, max_words):
+            chunks.append(current)
+            current = unit
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 def _chunk_section(section: str, max_chars: int, max_words: int) -> list[str]:
     """Chunk one hard section, preferring complete paragraphs whenever possible."""
     raw_paragraphs = re.split(r"\n\s*\n+", section.strip())
@@ -217,7 +255,10 @@ def split_text_semantically(
 
     chunks: list[str] = []
     for section in sections:
-        chunks.extend(_chunk_section(section, max_chars=max_chars, max_words=max_words))
+        if any(_SPEAKER_TURN_RE.match(line.strip()) for line in section.splitlines()):
+            chunks.extend(_split_dialogue_semantically(section, max_chars=max_chars, max_words=max_words))
+        else:
+            chunks.extend(_chunk_section(section, max_chars=max_chars, max_words=max_words))
 
     if not chunks:
         raise ValueError("No narratable text remained after chunking.")
@@ -225,7 +266,7 @@ def split_text_semantically(
 
 
 def preprocess_text(text: str) -> str:
-    """Clean narration text without destroying paragraph boundaries."""
+    """Clean narration text without destroying speaker labels or audio tags."""
     cleaned_lines: list[str] = []
     previous_blank = False
 
@@ -237,17 +278,26 @@ def preprocess_text(text: str) -> str:
             previous_blank = True
             continue
 
-        while line and line[0] in ",-._/@#*%$().":
-            line = line[1:].lstrip()
-        line = line.replace(";", ", ").replace(":", ", ")
-        line = line.replace("‘", "'").replace("’", "'")
-        line = re.sub(r"[ \t]+", " ", line).strip()
-        if line:
-            cleaned_lines.append(line)
+        speaker = _SPEAKER_TURN_RE.match(line)
+        if speaker:
+            prefix = f"Speaker {int(speaker.group(1))}: "
+            body = speaker.group(2).strip()
+        else:
+            prefix = ""
+            body = line
+
+        while body and body[0] in ",-._/@#*%$().":
+            body = body[1:].lstrip()
+        body = body.replace(";", ", ")
+        if not prefix:
+            body = body.replace(":", ", ")
+        body = body.replace("‘", "'").replace("’", "'")
+        body = re.sub(r"[ \t]+", " ", body).strip()
+        if body:
+            cleaned_lines.append(prefix + body)
             previous_blank = False
 
     return "\n".join(cleaned_lines).strip()
-
 
 def read_text_file(file_path: str | os.PathLike[str]) -> str:
     """Read text from a file using common encodings."""
@@ -259,18 +309,25 @@ def read_text_file(file_path: str | os.PathLike[str]) -> str:
     raise ValueError(f"Could not read file {file_path} with any supported encoding")
 
 
-def _build_tts_prompt(text: str) -> str:
-    """Give Gemini explicit recitation instructions to avoid added sounds/text."""
+def _build_tts_prompt(text: str, speaker_voices: dict[int, str] | None = None) -> str:
+    """Give Gemini explicit recitation instructions while preserving speaker turns and tags."""
+    if speaker_voices and len(speaker_voices) > 1:
+        direction = (
+            "Synthesize the speaker-labelled transcript below as one natural continuous conversation. "
+            "Speaker labels identify who talks and must not themselves be spoken. Honor inline audio tags such as "
+            "[laughs], [giggles], [whispers], and [short pause]. Keep each configured voice consistent. "
+        )
+    else:
+        direction = (
+            "Synthesize the transcript below as natural, continuous story narration. Honor inline audio tags. "
+        )
     return (
-        "Synthesize the transcript below as natural, continuous story narration. "
-        "This transcript may be one chunk of a longer story, so keep the narrator's "
-        "voice, pacing, volume, and delivery consistent. Do not add an introduction, "
-        "outro, commentary, music, sound effects, or any words not present in the transcript. "
-        "Speak only the text under TRANSCRIPT.\n\n"
+        direction
+        + "This transcript may be one chunk of a longer story, so keep pacing, volume, and delivery consistent. "
+        "Do not add an introduction, outro, commentary, music, or words not present in the transcript. Speak only the text under TRANSCRIPT.\n\n"
         "TRANSCRIPT:\n"
         f"{text}"
     )
-
 
 def _is_retryable_error(exc: Exception) -> bool:
     message = str(exc).lower()
@@ -315,9 +372,11 @@ def generate_tts_audio(
     voice_name: str = DEFAULT_VOICE,
     model_name: str = DEFAULT_MODEL,
     max_retries: int = DEFAULT_MAX_RETRIES,
+    speaker_voices: dict[int, str] | None = None,
 ) -> bytes:
     """Generate one semantic chunk with Gemini 3.1 TTS via Interactions API."""
-    prompt = _build_tts_prompt(text)
+    speaker_voices = dict(sorted((speaker_voices or {}).items()))
+    prompt = _build_tts_prompt(text, speaker_voices)
     print(
         f"Generating Gemini speech: model={model_name}, voice={voice_name}, words={_word_count(text)}"
     )
@@ -330,11 +389,19 @@ def generate_tts_audio(
                     message="Interactions usage is experimental.*",
                     category=UserWarning,
                 )
+                speech_config = (
+                    [
+                        {"speaker": f"Speaker {speaker_id}", "voice": speaker_voice}
+                        for speaker_id, speaker_voice in speaker_voices.items()
+                    ]
+                    if len(speaker_voices) > 1
+                    else [{"voice": next(iter(speaker_voices.values()), voice_name)}]
+                )
                 interaction = client.interactions.create(
                     model=model_name,
                     input=prompt,
                     response_format={"type": "audio"},
-                    generation_config={"speech_config": [{"voice": voice_name}]},
+                    generation_config={"speech_config": speech_config},
                 )
             audio_data = _decode_output_audio(interaction)
             if not audio_data:
@@ -419,6 +486,13 @@ def main() -> None:
         help=f"Gemini TTS model (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
+        "--speaker-voice",
+        action="append",
+        default=[],
+        metavar="ID=VOICE",
+        help="Map a transcript speaker ID to a Gemini voice; repeat for multi-speaker input.",
+    )
+    parser.add_argument(
         "--preprocess", action="store_true", help="Apply light narration text cleanup"
     )
     parser.add_argument(
@@ -469,6 +543,15 @@ def main() -> None:
 
     try:
         client = setup_gemini_client(args.api_key)
+        speaker_voices: dict[int, str] = {}
+        for item in args.speaker_voice:
+            speaker_id_text, separator, speaker_voice = item.partition("=")
+            if not separator or not speaker_id_text.strip().isdigit() or not speaker_voice.strip():
+                raise ValueError(f"Invalid --speaker-voice value {item!r}; expected ID=VOICE")
+            speaker_voices[int(speaker_id_text)] = speaker_voice.strip()
+        if len(speaker_voices) > 2:
+            raise ValueError("Gemini TTS supports at most two speakers per generation.")
+
         text = read_text_file(input_path)
         chunks = split_text_semantically(
             text,
@@ -497,6 +580,7 @@ def main() -> None:
                 voice_name=args.voice,
                 model_name=args.model,
                 max_retries=args.max_retries,
+                speaker_voices=speaker_voices,
             )
             print(
                 f"Chunk 1 actual PCM duration: {_pcm_duration_seconds(audio_data):.1f}s"

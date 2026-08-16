@@ -18,16 +18,16 @@ def test_vibevoice_story_is_one_valid_speaker_line():
     script = _format_vibevoice_script(story)
 
     assert script == (
-        "Speaker 1: First paragraph.\n"
-        "Speaker 1: Second paragraph.\n"
-        "Speaker 1: Third line with: a colon."
+        "Speaker 0: First paragraph.\n"
+        "Speaker 0: Second paragraph.\n"
+        "Speaker 0: Third line with: a colon."
     )
-    assert all(line.startswith("Speaker 1: ") for line in script.splitlines())
+    assert all(line.startswith("Speaker 0: ") for line in script.splitlines())
 
 
 def test_vibevoice_story_normalizes_smart_quotes():
     script = _format_vibevoice_script('“Hello,” she said. It’s fine.')
-    assert script == 'Speaker 1: "Hello," she said. It\'s fine.'
+    assert script == 'Speaker 0: "Hello," she said. It\'s fine.'
 
 
 def test_vibevoice_story_rejects_blank_input():
@@ -108,3 +108,9 @@ def test_gemini_preview_generates_once_and_caches(tmp_path, monkeypatch):
     assert len(calls) == 1
     assert "--voice" in calls[0]
     assert calls[0][calls[0].index("--voice") + 1] == "Aoede"
+
+
+
+def test_vibevoice_story_preserves_explicit_multi_speaker_turns():
+    story = "Speaker 0: Narrator line.\nSpeaker 1: Reply.\nSpeaker 0: Back to narrator."
+    assert _format_vibevoice_script(story) == story

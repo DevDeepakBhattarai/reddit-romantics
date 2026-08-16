@@ -127,6 +127,9 @@ def generate_gemini(
     split_on_separator: bool,
     chunk_seconds: int,
     log: LogFn,
+    *,
+    text: str | None = None,
+    speaker_voices: dict[int, str] | None = None,
 ) -> Path:
     script = project_root / "gemini-tts" / "gemini_tts.py"
     if not script.exists():
@@ -138,7 +141,10 @@ def generate_gemini(
     gemini_output.mkdir(parents=True, exist_ok=True)
 
     staged_input = gemini_input / story_path.name
-    shutil.copyfile(story_path, staged_input)
+    if text is None:
+        shutil.copyfile(story_path, staged_input)
+    else:
+        staged_input.write_text(text.strip(), encoding="utf-8")
     generated = gemini_output / f"{story_path.stem}.wav"
 
     command = [
@@ -149,6 +155,9 @@ def generate_gemini(
         command.append("--preprocess")
     if not split_on_separator:
         command.append("--no_split")
+    for speaker_id, speaker_voice in sorted((speaker_voices or {}).items()):
+        if speaker_voice and speaker_voice.strip():
+            command.extend(["--speaker-voice", f"{speaker_id}={speaker_voice.strip()}"])
 
     try:
         _run(command, project_root, log)
@@ -212,22 +221,30 @@ def get_vibevoice_voice_preview(project_root: Path, speaker_name: str) -> Path:
 
 
 def _format_vibevoice_script(story_text: str) -> str:
-    """Format prose as same-speaker turns for one single-pass VibeVoice generation."""
+    """Normalize VibeVoice script while preserving explicit `Speaker N:` turns."""
     normalized = (
         story_text.replace("\u2018", "'")
         .replace("\u2019", "'")
-        .replace("\u201c", '"')
-        .replace("\u201d", '"')
+        .replace("\u201c", '\"')
+        .replace("\u201d", '\"')
     )
     turns: list[str] = []
+    current_speaker = 0
     for raw_line in normalized.splitlines():
         line = re.sub(r"\s+", " ", raw_line).strip()
-        if line:
-            turns.append(f"Speaker 1: {line}")
+        if not line:
+            continue
+        match = re.match(r"^Speaker\s+(\d+)\s*:\s*(.*)$", line, flags=re.IGNORECASE)
+        if match:
+            current_speaker = int(match.group(1))
+            body = match.group(2).strip()
+            if body:
+                turns.append(f"Speaker {current_speaker}: {body}")
+        else:
+            turns.append(f"Speaker {current_speaker}: {line}")
     if not turns:
         raise ValueError("VibeVoice story text is empty.")
     return "\n".join(turns)
-
 
 def _load_vibevoice(model_id: str, device: str, dtype_name: str, log: LogFn):
     cache_key = (model_id, device, dtype_name)
@@ -294,6 +311,8 @@ def generate_vibevoice(
     device: str,
     dtype_name: str,
     log: LogFn,
+    *,
+    speaker_names: dict[int, str] | None = None,
 ) -> Path:
     """Generate the complete story in a single VibeVoice pass (no text chunking)."""
     vibevoice_root = project_root / "vendor" / "VibeVoice"
@@ -307,7 +326,15 @@ def generate_vibevoice(
     except ImportError as exc:
         raise RuntimeError("PyTorch is not installed. Run .\\setup.ps1 first.") from exc
 
-    voice_path = _resolve_voice(vibevoice_root, speaker_name)
+    selected_speakers = dict(sorted((speaker_names or {0: speaker_name}).items()))
+    if not selected_speakers:
+        selected_speakers = {0: speaker_name}
+    expected_ids = list(range(len(selected_speakers)))
+    if list(selected_speakers) != expected_ids:
+        raise ValueError(
+            f"VibeVoice speaker IDs must be contiguous from 0; got {list(selected_speakers)}."
+        )
+    voice_paths = [_resolve_voice(vibevoice_root, selected_speakers[i]) for i in expected_ids]
     processor, model = _load_vibevoice(model_id, device, dtype_name, log)
     resolved_device = "cuda" if device == "auto" and torch.cuda.is_available() else ("cpu" if device == "auto" else device)
 
@@ -317,13 +344,14 @@ def generate_vibevoice(
 
     full_script = _format_vibevoice_script(story_text)
     log(
-        f"Generating the full story with VibeVoice in one pass: speaker={voice_path.stem}, "
-        f"cfg={cfg_scale}, diffusion_steps={diffusion_steps}, seed={seed}."
+        f"Generating the full story with VibeVoice in one pass: "
+        f"speakers={[path.stem for path in voice_paths]}, cfg={cfg_scale}, "
+        f"diffusion_steps={diffusion_steps}, seed={seed}."
     )
     model.set_ddpm_inference_steps(num_steps=int(diffusion_steps))
     inputs = processor(
         text=[full_script],
-        voice_samples=[[str(voice_path)]],
+        voice_samples=[[str(path) for path in voice_paths]],
         padding=True,
         return_tensors="pt",
         return_attention_mask=True,

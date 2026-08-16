@@ -139,3 +139,50 @@ def test_generate_tts_audio_retries_transient_500(monkeypatch: pytest.MonkeyPatc
 
     assert gemini_tts.generate_tts_audio(client, "Retry me.", max_retries=3) == pcm
     assert interactions.attempts == 2
+
+
+
+def test_preprocess_preserves_speaker_labels_and_audio_tags():
+    text = "Speaker 0: Hello: there. [laughs]\nSpeaker 1: Wait; really? [short pause]"
+    cleaned = gemini_tts.preprocess_text(text)
+    assert cleaned == "Speaker 0: Hello: there. [laughs]\nSpeaker 1: Wait, really? [short pause]"
+
+
+def test_dialogue_chunker_preserves_speaker_turn_labels():
+    text = "\n".join(
+        f"Speaker {index % 2}: This is a complete dialogue sentence number {index}."
+        for index in range(160)
+    )
+    chunks = gemini_tts.split_text_semantically(text, target_seconds=45, estimated_wpm=140)
+    assert len(chunks) > 1
+    assert all(
+        line.startswith(("Speaker 0: ", "Speaker 1: "))
+        for chunk in chunks
+        for line in chunk.splitlines()
+    )
+
+
+def test_generate_tts_audio_uses_two_speaker_voice_config():
+    pcm = b"\x01\x02"
+    calls: list[dict] = []
+
+    class FakeInteractions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                output_audio=SimpleNamespace(data=base64.b64encode(pcm).decode("ascii"))
+            )
+
+    client = SimpleNamespace(interactions=FakeInteractions())
+    result = gemini_tts.generate_tts_audio(
+        client,
+        "Speaker 0: Hello.\nSpeaker 1: Hi.",
+        speaker_voices={0: "Kore", 1: "Puck"},
+    )
+    assert result == pcm
+    assert calls[0]["generation_config"] == {
+        "speech_config": [
+            {"speaker": "Speaker 0", "voice": "Kore"},
+            {"speaker": "Speaker 1", "voice": "Puck"},
+        ]
+    }
