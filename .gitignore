@@ -1,6 +1,7 @@
 # Local Python environments
 .venv/
 .whisperx-venv/
+.tts-venvs/
 */.venv/
 
 # Python caches

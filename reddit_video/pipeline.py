@@ -15,6 +15,13 @@ from dotenv import load_dotenv
 
 from .captions import CAPTION_THEMES, convert_whisperx_json_to_ass
 from .tts import generate_gemini, generate_vibevoice
+from .tts_models import (
+    generate_chatterbox,
+    generate_fish_s2,
+    generate_higgs_tts3,
+    generate_magpie,
+    generate_step_editx,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -44,6 +51,32 @@ class PipelineOptions:
     vibevoice_device: str = "auto"
     vibevoice_dtype: str = "auto"
 
+    fish_device: str = "hybrid"
+    fish_gpu_layers: int = 20
+    fish_half: bool = False
+    fish_temperature: float = 1.0
+    fish_seed: int = 42
+    fish_reference_audio: str | Path | None = None
+    fish_reference_text: str = ""
+
+    step_reference_audio: str | Path | None = None
+    step_reference_text: str = ""
+    step_mode: str = "clone"
+
+    magpie_model: str = "nvidia/magpie_tts_multilingual_357m"
+    magpie_speaker: str = "John"
+    magpie_language: str = "en"
+    magpie_device: str = "auto"
+    magpie_use_cfg: bool = True
+    magpie_cfg_scale: float = 2.5
+
+    chatterbox_variant: str = "turbo"
+    chatterbox_device: str = "auto"
+    chatterbox_reference_audio: str | Path | None = None
+
+    higgs_model: str = "bosonai/higgs-audio-v3-tts-4b"
+    higgs_device: str = "auto"
+
     background: str | Path = "videos/minecraft/minecraft.mp4"
     output_format: str = "shorts"
     randomize_background_start: bool = True
@@ -72,6 +105,13 @@ class PipelineResult:
     caption_path: Path | None
     whisper_json_path: Path | None
     elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class AudioPipelineResult:
+    audio_path: Path
+    elapsed_seconds: float
+    duration_seconds: float
 
 
 def slugify(value: str, fallback: str = "story") -> str:
@@ -135,6 +175,70 @@ class RedditVideoPipeline:
             check=True,
         )
         return float(result.stdout.strip())
+
+    def _audio_duration(self, path: Path) -> float:
+        try:
+            import soundfile as sf
+
+            return float(sf.info(str(path)).duration)
+        except (OSError, RuntimeError):
+            return self._probe_duration(path)
+
+    def _generate_narration(
+        self,
+        options: PipelineOptions,
+        story_path: Path,
+        story_text: str,
+        audio_path: Path,
+    ) -> Path:
+        engine = options.tts_engine
+        if engine == "gemini":
+            self._stage(0.10, f"Generating Gemini TTS ({options.gemini_voice})")
+            return generate_gemini(
+                self.root, story_path, audio_path, voice=options.gemini_voice, model=options.gemini_model,
+                preprocess=options.gemini_preprocess, split_on_separator=options.gemini_split_on_separator,
+                chunk_seconds=options.gemini_chunk_seconds, log=self.log,
+            )
+        if engine == "vibevoice":
+            self._stage(0.10, f"Generating VibeVoice ({options.vibevoice_speaker}) in one pass")
+            return generate_vibevoice(
+                self.root, story_text, audio_path, model_id=options.vibevoice_model,
+                speaker_name=options.vibevoice_speaker, cfg_scale=options.vibevoice_cfg_scale,
+                diffusion_steps=options.vibevoice_diffusion_steps, seed=options.vibevoice_seed,
+                device=options.vibevoice_device, dtype_name=options.vibevoice_dtype, log=self.log,
+            )
+        if engine == "fish":
+            self._stage(0.10, "Fish Audio: starting runtime and loading S2 Pro")
+            return generate_fish_s2(
+                self.root, story_text, audio_path, device=options.fish_device, gpu_layers=options.fish_gpu_layers,
+                half=options.fish_half, temperature=options.fish_temperature, seed=options.fish_seed,
+                reference_audio=options.fish_reference_audio, reference_text=options.fish_reference_text, log=self.log,
+            )
+        if engine == "step":
+            self._stage(0.10, "Step Audio: starting runtime and loading models")
+            return generate_step_editx(
+                self.root, story_text, audio_path, reference_audio=options.step_reference_audio,
+                reference_text=options.step_reference_text, mode=options.step_mode, log=self.log,
+            )
+        if engine == "magpie":
+            self._stage(0.10, f"Magpie: starting runtime and loading {options.magpie_speaker} voice")
+            return generate_magpie(
+                self.root, story_text, audio_path, model_id=options.magpie_model, speaker=options.magpie_speaker,
+                language=options.magpie_language, device=options.magpie_device, use_cfg=options.magpie_use_cfg,
+                cfg_scale=options.magpie_cfg_scale, log=self.log,
+            )
+        if engine == "chatterbox":
+            self._stage(0.10, f"Generating Chatterbox ({options.chatterbox_variant})")
+            return generate_chatterbox(
+                self.root, story_text, audio_path, variant=options.chatterbox_variant,
+                device=options.chatterbox_device, reference_audio=options.chatterbox_reference_audio, log=self.log,
+            )
+        if engine == "higgs":
+            self._stage(0.10, "Generating Higgs TTS 3")
+            return generate_higgs_tts3(
+                self.root, story_text, audio_path, model_id=options.higgs_model, device=options.higgs_device, log=self.log,
+            )
+        raise ValueError(f"Unknown TTS engine: {engine}")
 
     def _validate_narration_duration(self, story_text: str, audio_duration: float) -> None:
         words = re.findall(r"\b[\w'-]+\b", story_text, flags=re.UNICODE)
@@ -364,6 +468,20 @@ class RedditVideoPipeline:
         ])
         self._run_streamed(command, self.root)
 
+    def run_audio(self, options: PipelineOptions) -> AudioPipelineResult:
+        started = time.perf_counter()
+        story_path, story_text, base = self._prepare_story(options)
+        work_dir = self.root / ".work" / "audio_tests"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = work_dir / f"{base}_{slugify(options.tts_engine, 'tts')}.wav"
+        self._stage(0.05, f"Story loaded: {story_path.name}")
+        self._generate_narration(options, story_path, story_text, audio_path)
+        duration = self._audio_duration(audio_path)
+        self._validate_narration_duration(story_text, duration)
+        elapsed = time.perf_counter() - started
+        self._stage(1.0, f"Audio ready: {audio_path}")
+        return AudioPipelineResult(audio_path=audio_path, elapsed_seconds=elapsed, duration_seconds=duration)
+
     def run(self, options: PipelineOptions) -> PipelineResult:
         started = time.perf_counter()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
@@ -392,38 +510,9 @@ class RedditVideoPipeline:
         (self.root / "output" / "captions").mkdir(parents=True, exist_ok=True)
 
         self._stage(0.05, f"Story loaded: {story_path.name}")
-        if options.tts_engine == "gemini":
-            self._stage(0.10, f"Generating Gemini TTS ({options.gemini_voice})")
-            generate_gemini(
-                self.root,
-                story_path,
-                audio_path,
-                voice=options.gemini_voice,
-                model=options.gemini_model,
-                preprocess=options.gemini_preprocess,
-                split_on_separator=options.gemini_split_on_separator,
-                chunk_seconds=options.gemini_chunk_seconds,
-                log=self.log,
-            )
-        elif options.tts_engine == "vibevoice":
-            self._stage(0.10, f"Generating VibeVoice ({options.vibevoice_speaker}) in one pass")
-            generate_vibevoice(
-                self.root,
-                story_text,
-                audio_path,
-                model_id=options.vibevoice_model,
-                speaker_name=options.vibevoice_speaker,
-                cfg_scale=options.vibevoice_cfg_scale,
-                diffusion_steps=options.vibevoice_diffusion_steps,
-                seed=options.vibevoice_seed,
-                device=options.vibevoice_device,
-                dtype_name=options.vibevoice_dtype,
-                log=self.log,
-            )
-        else:
-            raise ValueError(f"Unknown TTS engine: {options.tts_engine}")
+        self._generate_narration(options, story_path, story_text, audio_path)
 
-        audio_duration = self._probe_duration(audio_path)
+        audio_duration = self._audio_duration(audio_path)
         self._validate_narration_duration(story_text, audio_duration)
         self.log(f"Narration duration: {audio_duration:.2f}s")
 
@@ -443,4 +532,3 @@ class RedditVideoPipeline:
         elapsed = time.perf_counter() - started
         self._stage(1.0, f"Finished: {output_path}")
         return PipelineResult(output_path, audio_path, caption_path, whisper_json, elapsed)
-
