@@ -714,7 +714,7 @@ def generate_fish_s2(
     output_path: Path,
     *,
     device: str = "hybrid",
-    gpu_layers: int = 20,
+    gpu_layers: int = 28,
     half: bool = False,
     temperature: float = 1.0,
     seed: int = 42,

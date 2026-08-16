@@ -175,7 +175,7 @@ def build_ui() -> gr.Blocks:
                             value="hybrid",
                             label="Fish runtime",
                         )
-                        fish_gpu_layers = gr.Slider(1, 36, value=20, step=1, label="CUDA transformer layers (hybrid)")
+                        fish_gpu_layers = gr.Slider(1, 36, value=28, step=1, label="CUDA transformer layers (hybrid)")
                     with gr.Row():
                         fish_half = gr.Checkbox(value=False, label="FP16 on official full-CUDA path only")
                         fish_temperature = gr.Slider(0.2, 1.5, value=1.0, step=0.05, label="Temperature")

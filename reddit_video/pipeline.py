@@ -49,7 +49,7 @@ class PipelineOptions:
     vibevoice_speaker_voices: dict[int, str] = field(default_factory=dict)
 
     fish_device: str = "hybrid"
-    fish_gpu_layers: int = 20
+    fish_gpu_layers: int = 28
     fish_half: bool = False
     fish_temperature: float = 1.0
     fish_seed: int = 42
