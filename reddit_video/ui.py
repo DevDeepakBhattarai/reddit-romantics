@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import traceback
+from pathlib import Path
 
 import gradio as gr
 
@@ -17,7 +18,13 @@ from .tts import (
     get_vibevoice_voice_preview,
     list_vibevoice_presets,
 )
-from .tts_models import MAGPIE_SPEAKERS, backend_runtime_status
+from .tts_models import (
+    backend_runtime_status,
+    cache_fish_reference_preset,
+    list_fish_reference_presets,
+    resolve_fish_reference_preset,
+)
+from .tts_text import detect_speakers, provider_speaker_limit
 
 GEMINI_VOICES = [
     "Zephyr", "Puck", "Charon", "Kore", "Fenrir", "Leda", "Orus", "Aoede", "Callirrhoe", "Autonoe",
@@ -26,24 +33,18 @@ GEMINI_VOICES = [
     "Vindemiatrix", "Sadachbia", "Sadaltager", "Sulafat",
 ]
 
-AUDIO_TEST_STORY = (
-    "I knew something was wrong when my phone lit up at two in the morning. "
-    "The message was from my best friend's older brother, a man who barely spoke to me unless we were all together. "
-    "He wrote, 'Don't panic, but I need to tell you something before she does.' "
-    "I stared at that sentence for a full minute before answering. Then another message appeared: "
-    "'She found the letter you left in my jacket last summer.' I actually laughed, because there had never been a letter. "
-    "Then I remembered the note I had written as a joke after one very flirtatious night, and suddenly I wasn't laughing anymore."
-)
-
 TTS_ENGINE_CHOICES = [
     ("Gemini TTS", "gemini"),
     ("Microsoft VibeVoice 1.5B", "vibevoice"),
     ("Fish Audio S2 Pro", "fish"),
-    ("Step Audio EditX", "step"),
-    ("NVIDIA Magpie Multilingual 357M", "magpie"),
-    ("Chatterbox", "chatterbox"),
-    ("Higgs Audio V3 / Higgs TTS 3", "higgs"),
 ]
+MAX_SPEAKER_SLOTS = 5
+
+AUDIO_TEST_STORY = (
+    "Speaker 0: I knew something was wrong when my phone lit up at two in the morning. [short pause]\n"
+    "Speaker 1: Don't panic, but I need to tell you something. [laugh]\n"
+    "Speaker 0: That was not remotely reassuring."
+)
 
 
 def _vibe_choices() -> list[str]:
@@ -58,33 +59,45 @@ def _first_or_none(values: list[str], preferred: str | None = None) -> str | Non
 
 
 def _runtime_status_markdown() -> str:
-    status = backend_runtime_status(PROJECT_ROOT)
-    labels = {
-        "fish": "Fish S2 Pro",
-        "step": "Step Audio EditX",
-        "magpie": "NVIDIA Magpie",
-        "chatterbox": "Chatterbox",
-        "higgs": "Higgs TTS 3",
-    }
-    lines = ["**Local TTS runtime status**"]
-    for key, label in labels.items():
-        value = status[key]
-        ready = value.lower().startswith("ready")
-        lines.append(f"- {'READY' if ready else 'NOT INSTALLED'} - **{label}**: `{value}`")
-    lines.append("Run `./setup_tts_models.ps1 -Backend <fish|step|magpie|chatterbox|higgs|all>` to provision model runtimes.")
-    return "\n".join(lines)
+    status = backend_runtime_status(PROJECT_ROOT)["fish"]
+    ready = status.lower().startswith("ready") or status.lower().startswith("official fish ready")
+    return (
+        "**Local TTS runtime status**\n"
+        f"- {'READY' if ready else 'NOT READY'} - **Fish Audio S2 Pro**: `{status}`\n\n"
+        "VibeVoice uses its installed local voice presets. Gemini uses the configured Google API key."
+    )
+
+
+def _read_story_for_casting(
+    story_text: str | None,
+    story_file: str | None,
+    story_upload: str | None,
+) -> str:
+    if story_text and story_text.strip():
+        return story_text
+    candidate = story_upload or story_file
+    if not candidate:
+        return ""
+    path = Path(candidate)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return ""
 
 
 def build_ui() -> gr.Blocks:
     stories = list_input_stories()
     backgrounds = list_background_videos()
     vibe_voices = _vibe_choices()
+    fish_presets = list_fish_reference_presets(PROJECT_ROOT)
 
     with gr.Blocks(title="Reddit Romantics Automation") as demo:
         gr.Markdown(
             "# Reddit Romantics Video Automation\n"
-            "Pick any narration engine, test only its audio, or generate the full captioned video. "
-            "Heavy local TTS models are isolated from the main app environment so they can use their own dependencies."
+            "Multi-speaker narration is available through Gemini, VibeVoice, and Fish Audio. "
+            "Paste `Speaker 0: ...`, `Speaker 1: ...` turns and the voice-casting controls appear automatically."
         )
 
         with gr.Row():
@@ -98,8 +111,13 @@ def build_ui() -> gr.Blocks:
                 story_upload = gr.File(label="Upload story .txt", file_types=[".txt"], type="filepath")
                 story_text = gr.Textbox(
                     label="Story text (takes priority over file)",
-                    lines=14,
-                    placeholder="Paste the complete Reddit story here...",
+                    lines=16,
+                    placeholder=(
+                        "Speaker 0 - Maya, narrator. Warm and quick-witted.\n"
+                        "Speaker 1 - Adrian. Deep, controlled voice.\n\n"
+                        "Speaker 0: The first time Adrian kissed me...\n"
+                        "Speaker 1: Maya."
+                    ),
                 )
                 output_name = gr.Textbox(label="Output name (optional)", placeholder="my_story")
 
@@ -110,21 +128,26 @@ def build_ui() -> gr.Blocks:
                     label="Narration engine",
                 )
 
-                with gr.Accordion("Gemini TTS settings", open=True):
-                    gemini_voice = gr.Dropdown(GEMINI_VOICES, value="Kore", label="Gemini voice")
+                with gr.Group(visible=True) as gemini_settings:
+                    gr.Markdown("### Gemini TTS settings")
+                    gemini_voice = gr.Dropdown(GEMINI_VOICES, value="Kore", label="Default / single-speaker voice")
                     gemini_preview = gr.Audio(label="Gemini voice preview", type="filepath", interactive=False)
                     gemini_model = gr.Textbox(value="gemini-3.1-flash-tts-preview", label="Gemini TTS model")
-                    gemini_preprocess = gr.Checkbox(value=True, label="Preprocess text")
+                    gemini_preprocess = gr.Checkbox(value=True, label="Preprocess text without removing speaker labels/tags")
                     gemini_split = gr.Checkbox(value=True, label="Treat ------------- as a hard chunk boundary")
                     gemini_chunk_seconds = gr.Slider(60, 240, value=180, step=15, label="Semantic chunk target (seconds)")
+                    gr.Markdown(
+                        "Gemini accepts up to **2 speakers**. Generic `[laugh]`, `<laugh>`, `[giggle]`, `[pause]`, "
+                        "etc. are normalized to Gemini audio tags before generation."
+                    )
 
-                with gr.Accordion("VibeVoice 1.5B settings", open=False):
-                    gr.Markdown("VibeVoice generates the whole story in one pass; there is no Gemini-style text chunking.")
+                with gr.Group(visible=False) as vibe_settings:
+                    gr.Markdown("### VibeVoice 1.5B settings")
                     vibe_speaker = gr.Dropdown(
                         choices=vibe_voices,
                         value=_first_or_none(vibe_voices, "Alice"),
                         allow_custom_value=True,
-                        label="Speaker preset",
+                        label="Default / single-speaker preset",
                     )
                     vibe_preview = gr.Audio(label="VibeVoice preset preview", type="filepath", interactive=False)
                     vibe_model = gr.Textbox(value="microsoft/VibeVoice-1.5B", label="Model")
@@ -135,73 +158,116 @@ def build_ui() -> gr.Blocks:
                         vibe_seed = gr.Number(value=42, precision=0, label="Seed")
                         vibe_device = gr.Dropdown(["auto", "cuda", "cpu"], value="auto", label="Device")
                         vibe_dtype = gr.Dropdown(["auto", "bfloat16", "float16", "float32"], value="auto", label="Dtype")
-
-                with gr.Accordion("Fish Audio S2 Pro settings", open=False):
                     gr.Markdown(
-                        "**Hybrid is the recommended mode for this 8 GB GPU.** It runs the full, unquantized F16 S2 Pro "
-                        "weights through native `s2.cpp`: selected transformer layers + Fast-AR + KV cache + codec on CUDA, "
-                        "remaining transformer layers on CPU. The codec falls back to CPU if CUDA memory is unavailable. "
-                        "No Q6/Q8/4-bit model is used."
+                        "VibeVoice accepts up to **4 speakers**. Inline decorator markup is stripped because this "
+                        "model does not expose a stable documented tag language."
                     )
+
+                with gr.Group(visible=False) as fish_settings:
+                    gr.Markdown("### Fish Audio S2 Pro settings")
                     with gr.Row():
                         fish_device = gr.Dropdown(
-                            [("Hybrid CPU + CUDA (unquantized F16)", "hybrid"), ("Official CPU / BF16", "cpu"), ("Official full CUDA", "cuda")],
+                            [
+                                ("Hybrid CPU + CUDA (unquantized F16)", "hybrid"),
+                                ("Official CPU / BF16", "cpu"),
+                                ("Official full CUDA", "cuda"),
+                            ],
                             value="hybrid",
                             label="Fish runtime",
                         )
-                        fish_gpu_layers = gr.Slider(1, 24, value=20, step=1, label="CUDA transformer layers (hybrid)")
+                        fish_gpu_layers = gr.Slider(1, 36, value=20, step=1, label="CUDA transformer layers (hybrid)")
                     with gr.Row():
                         fish_half = gr.Checkbox(value=False, label="FP16 on official full-CUDA path only")
                         fish_temperature = gr.Slider(0.2, 1.5, value=1.0, step=0.05, label="Temperature")
                         fish_seed = gr.Number(value=42, precision=0, label="Seed (official path)")
-                    fish_reference_audio = gr.File(label="Optional Fish reference voice WAV", file_types=["audio"], type="filepath")
-                    fish_reference_text = gr.Textbox(label="Reference clip transcript (required when cloning)", lines=2)
-
-                with gr.Accordion("Step Audio EditX settings", open=False):
+                    fish_reference_audio = gr.File(
+                        label="Optional default Fish reference voice WAV (single-speaker fallback)",
+                        file_types=["audio"],
+                        type="filepath",
+                    )
+                    fish_reference_text = gr.Textbox(
+                        label="Default reference transcript (required with default reference WAV)",
+                        lines=2,
+                    )
                     gr.Markdown(
-                        "Step EditX needs a reference clip for zero-shot TTS. Its official runtime is Linux/CUDA-oriented; "
-                        "use the AWQ/memory-efficient setup for an 8 GB card."
-                    )
-                    step_reference_audio = gr.File(label="Step reference voice audio (required)", file_types=["audio"], type="filepath")
-                    step_reference_text = gr.Textbox(label="Exact reference clip transcript (required)", lines=2)
-                    step_mode = gr.Radio(
-                        choices=[("Zero-shot clone", "clone"), ("Paralinguistic tags in target text", "paralinguistic")],
-                        value="clone",
-                        label="Step generation mode",
+                        "Fish uses native `<|speaker:N|>` turns internally and supports bracketed controls such as "
+                        "`[laughing]`, `[chuckle]`, `[whisper]`, and `[pause]`."
                     )
 
-                with gr.Accordion("NVIDIA Magpie settings", open=False):
-                    magpie_model = gr.Textbox(value="nvidia/magpie_tts_multilingual_357m", label="Model")
-                    with gr.Row():
-                        magpie_speaker = gr.Dropdown(MAGPIE_SPEAKERS, value="John", label="Speaker")
-                        magpie_language = gr.Textbox(value="en", label="Language code")
-                        magpie_device = gr.Dropdown(["auto", "cuda", "cpu"], value="auto", label="Device")
-                    with gr.Row():
-                        magpie_use_cfg = gr.Checkbox(value=True, label="Use CFG")
-                        magpie_cfg_scale = gr.Slider(1.0, 5.0, value=2.5, step=0.1, label="CFG scale")
-
-                with gr.Accordion("Chatterbox settings", open=False):
-                    gr.Markdown("Turbo/Nano understand paralinguistic tags such as `[chuckle]`. A reference clip is optional for voice cloning.")
-                    with gr.Row():
-                        chatterbox_variant = gr.Dropdown(["turbo", "nano", "original"], value="turbo", label="Variant")
-                        chatterbox_device = gr.Dropdown(["auto", "cuda", "cpu"], value="auto", label="Device")
-                    chatterbox_reference_audio = gr.File(label="Optional Chatterbox reference voice audio", file_types=["audio"], type="filepath")
-
-                with gr.Accordion("Higgs Audio V3 / Higgs TTS 3 settings", open=False):
-                    gr.Markdown(
-                        "Higgs supports inline `<|emotion:...|>`, `<|style:...|>`, `<|prosody:...|>`, and `<|sfx:...|>` controls. "
-                        "Higgs runs through a managed SGLang-Omni Docker server; auto/cpu modes use aggressive CPU offload so the 4B backbone can fit alongside the codec on an 8 GB GPU."
-                    )
-                    higgs_model = gr.Textbox(value="bosonai/higgs-audio-v3-tts-4b", label="Model")
-                    higgs_device = gr.Dropdown(["auto", "cuda", "cpu"], value="auto", label="Device")
+                provider_help = gr.Markdown()
 
         runtime_status = gr.Markdown(_runtime_status_markdown())
+
+        gr.Markdown("## Speaker voice assignments ? required")
+        speaker_status = gr.Markdown(
+            "Every speaker gets an explicit voice assignment. The model is never allowed to choose a speaker voice implicitly."
+        )
+
+        speaker_groups: list[gr.Group] = []
+        speaker_labels: list[gr.Markdown] = []
+        speaker_gemini_voices: list[gr.Dropdown] = []
+        speaker_vibe_voices: list[gr.Dropdown] = []
+        speaker_fish_presets: list[gr.Dropdown] = []
+        speaker_fish_preset_names: list[gr.Textbox] = []
+        speaker_fish_audio: list[gr.File] = []
+        speaker_fish_text: list[gr.Textbox] = []
+
+        for slot in range(MAX_SPEAKER_SLOTS):
+            with gr.Group(visible=False) as speaker_group:
+                speaker_label = gr.Markdown(f"**Speaker {slot}**")
+                with gr.Row():
+                    speaker_gemini = gr.Dropdown(
+                        GEMINI_VOICES,
+                        value="Kore" if slot == 0 else ("Puck" if slot == 1 else "Kore"),
+                        label="Gemini voice",
+                        visible=True,
+                    )
+                    speaker_vibe = gr.Dropdown(
+                        choices=vibe_voices,
+                        value=_first_or_none(vibe_voices, "Alice" if slot == 0 else "Frank"),
+                        allow_custom_value=True,
+                        label="VibeVoice preset",
+                        visible=False,
+                    )
+                    speaker_fish_preset = gr.Dropdown(
+                        choices=fish_presets,
+                        value=_first_or_none(fish_presets),
+                        allow_custom_value=True,
+                        label="Fish saved voice preset",
+                        info="Optional when uploading a reference below. Upload overrides this preset.",
+                        visible=False,
+                    )
+                    speaker_fish_preset_name = gr.Textbox(
+                        label="Save uploaded Fish voice as preset",
+                        placeholder="e-girl (blank = use uploaded filename)",
+                        info="When an upload is used, it is cached permanently under this name for future sessions.",
+                        visible=False,
+                    )
+                    speaker_fish_ref = gr.File(
+                        label="Fish reference voice audio",
+                        file_types=["audio"],
+                        type="filepath",
+                        visible=False,
+                    )
+                    speaker_fish_transcript = gr.Textbox(
+                        label="Exact transcript of uploaded Fish reference",
+                        lines=2,
+                        visible=False,
+                    )
+            speaker_groups.append(speaker_group)
+            speaker_labels.append(speaker_label)
+            speaker_gemini_voices.append(speaker_gemini)
+            speaker_vibe_voices.append(speaker_vibe)
+            speaker_fish_presets.append(speaker_fish_preset)
+            speaker_fish_preset_names.append(speaker_fish_preset_name)
+            speaker_fish_audio.append(speaker_fish_ref)
+            speaker_fish_text.append(speaker_fish_transcript)
 
         gr.Markdown("## Audio-only TTS test")
         audio_test_text = gr.Textbox(
             value=AUDIO_TEST_STORY,
             lines=7,
-            label="Short test story (edit this to try laughs, whispers, pauses, etc.)",
+            label="Test transcript",
         )
         with gr.Row():
             test_audio = gr.Button("Generate audio only", variant="primary")
@@ -253,6 +319,98 @@ def build_ui() -> gr.Blocks:
         preview_status = gr.Markdown()
         status = gr.Markdown()
 
+        def provider_visibility(engine: str):
+            descriptions = {
+                "gemini": "**Gemini:** native 1–2 speaker casting; supported generic tags are normalized to Gemini bracket tags.",
+                "vibevoice": "**VibeVoice:** native 1–4 speaker casting from WAV voice presets; decorator markup is removed before inference.",
+                "fish": "**Fish S2 Pro:** each uploaded reference is cached as a reusable persistent preset; native multi-speaker tokens and bracket controls are retained/normalized.",
+            }
+            return (
+                gr.update(visible=engine == "gemini"),
+                gr.update(visible=engine == "vibevoice"),
+                gr.update(visible=engine == "fish"),
+                descriptions.get(engine, ""),
+            )
+
+        tts_engine.change(
+            provider_visibility,
+            [tts_engine],
+            [gemini_settings, vibe_settings, fish_settings, provider_help],
+            show_progress="hidden",
+        )
+
+        casting_outputs = [speaker_status]
+        for slot in range(MAX_SPEAKER_SLOTS):
+            casting_outputs.extend([
+                speaker_groups[slot],
+                speaker_labels[slot],
+                speaker_gemini_voices[slot],
+                speaker_vibe_voices[slot],
+                speaker_fish_presets[slot],
+                speaker_fish_preset_names[slot],
+                speaker_fish_audio[slot],
+                speaker_fish_text[slot],
+            ])
+
+        def _casting_updates(source: str, engine: str):
+            speakers = detect_speakers(source)
+            count = len(speakers) or 1
+            limit = provider_speaker_limit(engine)
+            if len(speakers) > limit:
+                message = (
+                    f"**{len(speakers)} speakers detected, but {engine} supports at most {limit} in this pipeline.** "
+                    "Choose a provider with enough speaker capacity before generating."
+                )
+            elif speakers:
+                message = (
+                    f"**{len(speakers)} speaker(s) detected.** Every visible row below is an explicit, required voice assignment."
+                )
+            else:
+                message = (
+                    "**Single narrator mode.** Speaker 0 still has an explicit voice assignment; no provider may choose it randomly."
+                )
+
+            result: list[object] = [message]
+            for slot in range(MAX_SPEAKER_SLOTS):
+                active = slot < count
+                if active and speakers:
+                    speaker = speakers[slot]
+                    label = f"**Speaker {speaker.speaker_id}**"
+                    if speaker.description:
+                        label += f" ? {speaker.description}"
+                elif active:
+                    label = "**Speaker 0 ? single narrator**"
+                else:
+                    label = f"**Speaker slot {slot + 1}**"
+                provider_slot_supported = slot < limit
+                fish_visible = active and engine == "fish" and provider_slot_supported
+                result.extend([
+                    gr.update(visible=active),
+                    gr.update(value=label),
+                    gr.update(visible=active and engine == "gemini" and provider_slot_supported),
+                    gr.update(visible=active and engine == "vibevoice" and provider_slot_supported),
+                    gr.update(visible=fish_visible),
+                    gr.update(visible=fish_visible),
+                    gr.update(visible=fish_visible),
+                    gr.update(visible=fish_visible),
+                ])
+            return result
+
+        def update_casting(story_text_value, story_file_value, story_upload_value, engine):
+            source = _read_story_for_casting(story_text_value, story_file_value, story_upload_value)
+            return _casting_updates(source, engine)
+
+        casting_inputs = [story_text, story_file, story_upload, tts_engine]
+        for trigger in (story_text, story_file, story_upload, tts_engine):
+            trigger.change(update_casting, casting_inputs, casting_outputs, show_progress="hidden")
+        demo.load(update_casting, casting_inputs, casting_outputs, show_progress="hidden")
+        audio_test_text.change(
+            lambda text, engine: _casting_updates(text or "", engine),
+            [audio_test_text, tts_engine],
+            casting_outputs,
+            show_progress="hidden",
+        )
+
         def load_gemini_preview(voice: str | None, model: str | None):
             if not voice:
                 return None, ""
@@ -281,70 +439,120 @@ def build_ui() -> gr.Blocks:
         gemini_voice.change(load_gemini_preview, [gemini_voice, gemini_model], [gemini_preview, preview_status], show_progress="minimal")
         gemini_model.change(load_gemini_preview, [gemini_voice, gemini_model], [gemini_preview, preview_status], show_progress="minimal")
         vibe_speaker.change(load_vibe_preview, [vibe_speaker], [vibe_preview, preview_status], show_progress="hidden")
-        demo.load(load_gemini_preview, [gemini_voice, gemini_model], [gemini_preview, preview_status], show_progress="minimal")
-        demo.load(load_vibe_preview, [vibe_speaker], [vibe_preview, preview_status], show_progress="hidden")
 
-        def refresh_choices(current_story: str | None, current_background: str | None, current_voice: str | None):
+        def refresh_choices(
+            current_story: str | None,
+            current_background: str | None,
+            current_voice: str | None,
+            *values,
+        ):
+            speaker_voice_values = values[:MAX_SPEAKER_SLOTS]
+            fish_preset_values = values[MAX_SPEAKER_SLOTS:]
             new_stories = list_input_stories()
             new_backgrounds = list_background_videos()
             new_voices = _vibe_choices()
-            return (
-                gr.Dropdown(choices=new_stories, value=_first_or_none(new_stories, current_story)),
-                gr.Dropdown(choices=new_backgrounds, value=_first_or_none(new_backgrounds, current_background)),
-                gr.Dropdown(choices=new_voices, value=_first_or_none(new_voices, current_voice)),
-            )
+            new_fish_presets = list_fish_reference_presets(PROJECT_ROOT)
+            updates: list[object] = [
+                gr.update(choices=new_stories, value=_first_or_none(new_stories, current_story)),
+                gr.update(choices=new_backgrounds, value=_first_or_none(new_backgrounds, current_background)),
+                gr.update(choices=new_voices, value=_first_or_none(new_voices, current_voice)),
+            ]
+            for value in speaker_voice_values:
+                updates.append(gr.update(choices=new_voices, value=_first_or_none(new_voices, value)))
+            for value in fish_preset_values:
+                updates.append(
+                    gr.update(
+                        choices=new_fish_presets,
+                        value=value if value in new_fish_presets else _first_or_none(new_fish_presets),
+                    )
+                )
+            return updates
 
-        refresh.click(refresh_choices, [story_file, background, vibe_speaker], [story_file, background, vibe_speaker])
+        refresh.click(
+            refresh_choices,
+            [story_file, background, vibe_speaker, *speaker_vibe_voices, *speaker_fish_presets],
+            [story_file, background, vibe_speaker, *speaker_vibe_voices, *speaker_fish_presets],
+            show_progress="hidden",
+        )
         refresh_runtime.click(_runtime_status_markdown, outputs=[runtime_status], show_progress="hidden")
+
+        provider_inputs = [
+            tts_engine,
+            gemini_voice, gemini_model, gemini_preprocess, gemini_split, gemini_chunk_seconds,
+            vibe_speaker, vibe_model, vibe_cfg, vibe_steps, vibe_seed, vibe_device, vibe_dtype,
+            fish_device, fish_gpu_layers, fish_half, fish_temperature, fish_seed,
+            fish_reference_audio, fish_reference_text,
+            *speaker_gemini_voices,
+            *speaker_vibe_voices,
+            *speaker_fish_presets,
+            *speaker_fish_preset_names,
+            *speaker_fish_audio,
+            *speaker_fish_text,
+        ]
 
         def make_tts_options(
             story_text_value,
             output_name_value,
-            tts_engine_value,
-            gemini_voice_value,
-            gemini_model_value,
-            gemini_preprocess_value,
-            gemini_split_value,
-            gemini_chunk_seconds_value,
-            vibe_speaker_value,
-            vibe_model_value,
-            vibe_cfg_value,
-            vibe_steps_value,
-            vibe_seed_value,
-            vibe_device_value,
-            vibe_dtype_value,
-            fish_device_value,
-            fish_gpu_layers_value,
-            fish_half_value,
-            fish_temperature_value,
-            fish_seed_value,
-            fish_reference_audio_value,
-            fish_reference_text_value,
-            step_reference_audio_value,
-            step_reference_text_value,
-            step_mode_value,
-            magpie_model_value,
-            magpie_speaker_value,
-            magpie_language_value,
-            magpie_device_value,
-            magpie_use_cfg_value,
-            magpie_cfg_scale_value,
-            chatterbox_variant_value,
-            chatterbox_device_value,
-            chatterbox_reference_audio_value,
-            higgs_model_value,
-            higgs_device_value,
+            *values,
+            speaker_source_text: str | None = None,
             **extra,
         ) -> PipelineOptions:
+            cursor = 0
+            tts_engine_value = values[cursor]; cursor += 1
+            gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value = values[cursor:cursor + 5]; cursor += 5
+            vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value = values[cursor:cursor + 7]; cursor += 7
+            fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value = values[cursor:cursor + 7]; cursor += 7
+            gemini_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+            vibe_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+            fish_preset_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+            fish_preset_name_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+            fish_audio_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+            fish_text_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
+
+            speakers = detect_speakers(speaker_source_text if speaker_source_text is not None else (story_text_value or ""))
+            speaker_ids = [speaker.speaker_id for speaker in speakers] or [0]
+            gemini_speaker_voices = {
+                speaker_id: gemini_slots[index]
+                for index, speaker_id in enumerate(speaker_ids[:MAX_SPEAKER_SLOTS])
+                if gemini_slots[index]
+            }
+            vibevoice_speaker_voices = {
+                speaker_id: vibe_slots[index]
+                for index, speaker_id in enumerate(speaker_ids[:MAX_SPEAKER_SLOTS])
+                if vibe_slots[index]
+            }
+            fish_speaker_references: dict[int, tuple[str | Path, str]] = {}
+            for index, speaker_id in enumerate(speaker_ids[:MAX_SPEAKER_SLOTS]):
+                uploaded_audio = fish_audio_slots[index]
+                uploaded_text = (fish_text_slots[index] or "").strip()
+                preset_id = (fish_preset_slots[index] or "").strip()
+                if uploaded_audio:
+                    if not uploaded_text:
+                        raise ValueError(
+                            f"Speaker {speaker_id}: Fish uploaded reference audio requires its exact transcript."
+                        )
+                    _saved_name, saved_audio, saved_text = cache_fish_reference_preset(
+                        PROJECT_ROOT,
+                        uploaded_audio,
+                        uploaded_text,
+                        (fish_preset_name_slots[index] or "").strip(),
+                    )
+                    fish_speaker_references[speaker_id] = (saved_audio, saved_text)
+                elif preset_id:
+                    fish_speaker_references[speaker_id] = resolve_fish_reference_preset(
+                        PROJECT_ROOT, preset_id
+                    )
+
             return PipelineOptions(
                 story_text=story_text_value or "",
                 output_name=output_name_value or "",
                 tts_engine=tts_engine_value,
-                gemini_voice=gemini_voice_value,
-                gemini_model=gemini_model_value,
+                gemini_voice=gemini_voice_value or "Kore",
+                gemini_model=gemini_model_value or "gemini-3.1-flash-tts-preview",
                 gemini_preprocess=bool(gemini_preprocess_value),
                 gemini_split_on_separator=bool(gemini_split_value),
                 gemini_chunk_seconds=int(gemini_chunk_seconds_value),
+                gemini_speaker_voices=gemini_speaker_voices,
                 vibevoice_model=vibe_model_value or "microsoft/VibeVoice-1.5B",
                 vibevoice_speaker=vibe_speaker_value or "Alice",
                 vibevoice_cfg_scale=float(vibe_cfg_value),
@@ -352,6 +560,7 @@ def build_ui() -> gr.Blocks:
                 vibevoice_seed=int(vibe_seed_value),
                 vibevoice_device=vibe_device_value,
                 vibevoice_dtype=vibe_dtype_value,
+                vibevoice_speaker_voices=vibevoice_speaker_voices,
                 fish_device=fish_device_value,
                 fish_gpu_layers=int(fish_gpu_layers_value),
                 fish_half=bool(fish_half_value),
@@ -359,72 +568,23 @@ def build_ui() -> gr.Blocks:
                 fish_seed=int(fish_seed_value),
                 fish_reference_audio=fish_reference_audio_value or None,
                 fish_reference_text=fish_reference_text_value or "",
-                step_reference_audio=step_reference_audio_value or None,
-                step_reference_text=step_reference_text_value or "",
-                step_mode=step_mode_value,
-                magpie_model=magpie_model_value or "nvidia/magpie_tts_multilingual_357m",
-                magpie_speaker=magpie_speaker_value or "John",
-                magpie_language=magpie_language_value or "en",
-                magpie_device=magpie_device_value,
-                magpie_use_cfg=bool(magpie_use_cfg_value),
-                magpie_cfg_scale=float(magpie_cfg_scale_value),
-                chatterbox_variant=chatterbox_variant_value,
-                chatterbox_device=chatterbox_device_value,
-                chatterbox_reference_audio=chatterbox_reference_audio_value or None,
-                higgs_model=higgs_model_value or "bosonai/higgs-audio-v3-tts-4b",
-                higgs_device=higgs_device_value,
+                fish_speaker_references=fish_speaker_references,
                 **extra,
             )
 
-        tts_inputs = [
-            tts_engine,
-            gemini_voice, gemini_model, gemini_preprocess, gemini_split, gemini_chunk_seconds,
-            vibe_speaker, vibe_model, vibe_cfg, vibe_steps, vibe_seed, vibe_device, vibe_dtype,
-            fish_device, fish_gpu_layers, fish_half, fish_temperature, fish_seed, fish_reference_audio, fish_reference_text,
-            step_reference_audio, step_reference_text, step_mode,
-            magpie_model, magpie_speaker, magpie_language, magpie_device, magpie_use_cfg, magpie_cfg_scale,
-            chatterbox_variant, chatterbox_device, chatterbox_reference_audio,
-            higgs_model, higgs_device,
-        ]
-
-        def generate_audio_test(
-            preview_text_value,
-            tts_engine_value,
-            gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value,
-            vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value,
-            fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value,
-            step_reference_audio_value, step_reference_text_value, step_mode_value,
-            magpie_model_value, magpie_speaker_value, magpie_language_value, magpie_device_value, magpie_use_cfg_value, magpie_cfg_scale_value,
-            chatterbox_variant_value, chatterbox_device_value, chatterbox_reference_audio_value,
-            higgs_model_value, higgs_device_value,
-            progress=gr.Progress(),  # noqa: B008 - Gradio injects this dependency
-        ):
+        def generate_audio_test(preview_text_value, *values):
             logs: list[str] = []
 
             def log(message: str) -> None:
                 logs.append(message)
                 print(message, flush=True)
 
-            def report(value: float, message: str) -> None:
-                progress(value, desc=message)
-
             try:
-                options = make_tts_options(
-                    preview_text_value,
-                    "tts_preview",
-                    tts_engine_value,
-                    gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value,
-                    vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value,
-                    fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value,
-                    step_reference_audio_value, step_reference_text_value, step_mode_value,
-                    magpie_model_value, magpie_speaker_value, magpie_language_value, magpie_device_value, magpie_use_cfg_value, magpie_cfg_scale_value,
-                    chatterbox_variant_value, chatterbox_device_value, chatterbox_reference_audio_value,
-                    higgs_model_value, higgs_device_value,
-                )
-                result = RedditVideoPipeline(log=log, progress=report).run_audio(options)
+                options = make_tts_options(preview_text_value, "tts_preview", *values)
+                result = RedditVideoPipeline(log=log).run_audio(options)
                 summary = (
-                    f"### Audio ready\n"
-                    f"- Engine: **{tts_engine_value}**\n"
+                    "### Audio ready\n"
+                    f"- Engine: **{options.tts_engine}**\n"
                     f"- Audio: `{result.audio_path}`\n"
                     f"- Duration: `{result.duration_seconds:.1f}s`\n"
                     f"- Generation time: `{result.elapsed_seconds:.1f}s`"
@@ -437,62 +597,45 @@ def build_ui() -> gr.Blocks:
 
         test_audio.click(
             generate_audio_test,
-            inputs=[audio_test_text, *tts_inputs],
+            inputs=[audio_test_text, *provider_inputs],
             outputs=[test_audio_output, test_audio_status],
             api_name="generate_audio_only",
         )
 
-        def generate(
-            story_file_value,
-            story_upload_value,
-            story_text_value,
-            output_name_value,
-            tts_engine_value,
-            gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value,
-            vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value,
-            fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value,
-            step_reference_audio_value, step_reference_text_value, step_mode_value,
-            magpie_model_value, magpie_speaker_value, magpie_language_value, magpie_device_value, magpie_use_cfg_value, magpie_cfg_scale_value,
-            chatterbox_variant_value, chatterbox_device_value, chatterbox_reference_audio_value,
-            higgs_model_value, higgs_device_value,
-            background_value,
-            background_upload_value,
-            output_format_value,
-            random_start_value,
-            captions_value,
-            caption_theme_value,
-            caption_max_words_value,
-            caption_pause_value,
-            whisper_model_value,
-            whisper_language_value,
-            whisper_compute_value,
-            whisper_align_value,
-            encoder_value,
-            quality_value,
-            end_padding_value,
-            progress=gr.Progress(),  # noqa: B008 - Gradio injects this dependency
-        ):
+        render_inputs = [
+            background, background_upload, output_format, random_start,
+            captions, caption_theme, caption_max_words, caption_pause,
+            whisper_model, whisper_language, whisper_compute, whisper_align,
+            encoder, quality, end_padding,
+        ]
+        provider_input_count = len(provider_inputs)
+
+        def generate(story_file_value, story_upload_value, story_text_value, output_name_value, *values):
             logs: list[str] = []
 
             def log(message: str) -> None:
                 logs.append(message)
                 print(message, flush=True)
 
-            def report(value: float, message: str) -> None:
-                progress(value, desc=message)
-
             try:
+                provider_values = values[:provider_input_count]
+                render_values = values[provider_input_count:]
+                (
+                    background_value, background_upload_value, output_format_value, random_start_value,
+                    captions_value, caption_theme_value, caption_max_words_value, caption_pause_value,
+                    whisper_model_value, whisper_language_value, whisper_compute_value, whisper_align_value,
+                    encoder_value, quality_value, end_padding_value,
+                ) = render_values
+
+                resolved_story_text = story_text_value or ""
+                if not resolved_story_text.strip():
+                    resolved_story_text = _read_story_for_casting("", story_file_value, story_upload_value)
+
                 options = make_tts_options(
-                    story_text_value,
+                    story_text_value or "",
                     output_name_value,
-                    tts_engine_value,
-                    gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value,
-                    vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value,
-                    fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value,
-                    step_reference_audio_value, step_reference_text_value, step_mode_value,
-                    magpie_model_value, magpie_speaker_value, magpie_language_value, magpie_device_value, magpie_use_cfg_value, magpie_cfg_scale_value,
-                    chatterbox_variant_value, chatterbox_device_value, chatterbox_reference_audio_value,
-                    higgs_model_value, higgs_device_value,
+                    *provider_values,
+                    speaker_source_text=resolved_story_text,
                     story_file=story_upload_value or story_file_value or None,
                     background=background_upload_value or background_value,
                     output_format=output_format_value,
@@ -509,10 +652,10 @@ def build_ui() -> gr.Blocks:
                     video_quality=int(quality_value),
                     end_padding_seconds=float(end_padding_value),
                 )
-                result = RedditVideoPipeline(log=log, progress=report).run(options)
+                result = RedditVideoPipeline(log=log).run(options)
                 caption = str(result.caption_path) if result.caption_path else "disabled"
                 summary = (
-                    f"### Completed\n"
+                    "### Completed\n"
                     f"- Video: `{result.video_path}`\n"
                     f"- Audio: `{result.audio_path}`\n"
                     f"- Captions: `{caption}`\n"
@@ -528,9 +671,8 @@ def build_ui() -> gr.Blocks:
             generate,
             inputs=[
                 story_file, story_upload, story_text, output_name,
-                *tts_inputs,
-                background, background_upload, output_format, random_start, captions, caption_theme, caption_max_words, caption_pause,
-                whisper_model, whisper_language, whisper_compute, whisper_align, encoder, quality, end_padding,
+                *provider_inputs,
+                *render_inputs,
             ],
             outputs=[video_output, audio_output, status],
             api_name="generate_video",
