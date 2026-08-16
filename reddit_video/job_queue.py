@@ -68,8 +68,10 @@ class VideoJobQueue:
 
     def _append_worker_log(self, message: str) -> None:
         self.queue_root.mkdir(parents=True, exist_ok=True)
+        line = f"[{self._utc_now()}] {message}"
         with self.worker_log.open("a", encoding="utf-8") as handle:
-            handle.write(f"[{self._utc_now()}] {message}\n")
+            handle.write(line + "\n")
+        print(line, flush=True)
 
     def _active_job_for_run(self, run_dir: Path) -> dict[str, Any] | None:
         wanted = os.path.normcase(str(run_dir.resolve()))
@@ -115,13 +117,14 @@ class VideoJobQueue:
         command = [sys.executable, str(Path(main_script).resolve()), "queue-worker"]
         kwargs: dict[str, Any] = {
             "cwd": str(self.root),
-            "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
             "close_fds": True,
         }
         if os.name == "nt":
-            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NEW_CONSOLE
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_BREAKAWAY_FROM_JOB
+            )
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)

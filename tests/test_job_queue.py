@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 
 from reddit_video.job_queue import VideoJobQueue
@@ -85,3 +87,32 @@ def test_enqueue_rejects_empty_story(tmp_path: Path):
         assert "non-empty story.md" in str(exc)
     else:
         raise AssertionError("empty story must not be queued")
+
+
+def test_detached_worker_uses_independent_visible_console_on_windows(tmp_path: Path, monkeypatch):
+    queue = VideoJobQueue(tmp_path)
+    captured: dict = {}
+
+    class FakeProcess:
+        pid = 4242
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    pid = queue.start_detached_worker(tmp_path / "main.py")
+
+    assert pid == 4242
+    if os.name == "nt":
+        flags = captured["kwargs"]["creationflags"]
+        assert flags & subprocess.CREATE_NEW_CONSOLE
+        assert flags & subprocess.CREATE_NEW_PROCESS_GROUP
+        assert flags & subprocess.CREATE_BREAKAWAY_FROM_JOB
+        assert not flags & subprocess.DETACHED_PROCESS
+        assert "stdin" not in captured["kwargs"]
+        assert "stdout" not in captured["kwargs"]
+        assert "stderr" not in captured["kwargs"]
+    else:
+        assert captured["kwargs"]["start_new_session"] is True
