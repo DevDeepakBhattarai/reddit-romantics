@@ -19,12 +19,19 @@ def test_slugify_produces_safe_output_name():
     assert slugify("***") == "story"
 
 
-def test_repo_discovers_inputs_and_backgrounds():
-    stories = list_input_stories()
-    backgrounds = list_background_videos()
-    assert any(item.endswith("input/test.txt") for item in stories)
-    assert any(item.endswith("videos/minecraft/minecraft.mp4") for item in backgrounds)
-    assert any("videos/asmr/" in item for item in backgrounds)
+def test_repo_discovers_inputs_and_backgrounds(tmp_path: Path):
+    story = tmp_path / "input" / "test.txt"
+    minecraft = tmp_path / "videos" / "minecraft" / "minecraft.mp4"
+    asmr = tmp_path / "videos" / "asmr" / "clip.mp4"
+    for path in (story, minecraft, asmr):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"test")
+
+    assert list_input_stories(tmp_path) == ["input/test.txt"]
+    assert list_background_videos(tmp_path) == [
+        "videos/asmr/clip.mp4",
+        "videos/minecraft/minecraft.mp4",
+    ]
 
 
 def test_story_text_is_written_for_reusable_pipeline(tmp_path: Path):

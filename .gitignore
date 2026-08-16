@@ -9,6 +9,7 @@ __pycache__/
 */__pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
 
 # Downloaded/model runtime state
 vendor/
@@ -28,3 +29,7 @@ output/*
 !output/.gitkeep
 # Persistent user voice presets (local-only)
 voice_presets/
+# Pipeline-generated story staging files
+input/story_*.txt
+input/tts_preview.txt
+gemini-tts/input/story_*.txt

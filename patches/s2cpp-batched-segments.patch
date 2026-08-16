@@ -1,0 +1,155 @@
+diff --git a/src/s2_server.cpp b/src/s2_server.cpp
+index 08fea2d..f44261e 100644
+--- a/src/s2_server.cpp
++++ b/src/s2_server.cpp
+@@ -148,20 +148,112 @@ static std::vector<std::string> split_long_segment(const std::string & segment,
+     return parts;
+ }
+
++static size_t semantic_text_length(const std::string & text) {
++    static const std::string speaker_prefix = "<|speaker:";
++    size_t length = 0;
++    for (size_t i = 0; i < text.size();) {
++        if (text.compare(i, speaker_prefix.size(), speaker_prefix) == 0) {
++            const size_t tag_end = text.find("|>", i + speaker_prefix.size());
++            if (tag_end != std::string::npos) {
++                i = tag_end + 2;
++                continue;
++            }
++        }
++        ++length;
++        ++i;
++    }
++    return length;
++}
++
+ static std::vector<std::string> split_text_for_segmented_synthesis(const std::string & text,
+-                                                                   size_t max_chars_per_segment) {
++                                                                   size_t max_chars_per_segment,
++                                                                   size_t sentences_per_segment) {
+     std::vector<std::string> sentences = split_sentences_basic(text);
+-    if (max_chars_per_segment == 0) {
+-        return sentences;
++
++    // Custom long-form mode: sentences_per_segment == 0 means semantic packing.
++    // Pack as many complete sentences as fit under max_chars_per_segment. Never
++    // split a sentence merely to satisfy the character budget; an unusually long
++    // single sentence is allowed to exceed the target intact.
++    if (sentences_per_segment == 0) {
++        std::vector<std::string> segments;
++        std::string current;
++        size_t current_semantic_chars = 0;
++
++        auto flush_current = [&]() {
++            if (!current.empty()) {
++                segments.push_back(std::move(current));
++                current.clear();
++            }
++            current_semantic_chars = 0;
++        };
++
++        for (const std::string & sentence : sentences) {
++            const size_t sentence_semantic_chars = semantic_text_length(sentence);
++            const size_t separator_chars = current.empty() ? 0u : 1u;
++            const bool exceeds_char_limit =
++                max_chars_per_segment > 0 && !current.empty() &&
++                current_semantic_chars + separator_chars + sentence_semantic_chars > max_chars_per_segment;
++            if (exceeds_char_limit) {
++                flush_current();
++            }
++
++            if (!current.empty()) {
++                current.push_back(' ');
++                ++current_semantic_chars;
++            }
++            current += sentence;
++            current_semantic_chars += sentence_semantic_chars;
++        }
++
++        flush_current();
++        return segments;
+     }
+
+-    std::vector<std::string> segments;
++    // Preserve the upstream sentence-by-sentence behavior for callers that do
++    // not opt into semantic packing. Long individual sentences may be clause-
++    // split in that legacy mode according to max_chars_per_segment.
++    std::vector<std::string> sentence_parts;
+     for (const std::string & sentence : sentences) {
+         std::vector<std::string> parts = split_long_segment(sentence, max_chars_per_segment);
+-        segments.insert(segments.end(),
+-                        std::make_move_iterator(parts.begin()),
+-                        std::make_move_iterator(parts.end()));
++        sentence_parts.insert(sentence_parts.end(),
++                              std::make_move_iterator(parts.begin()),
++                              std::make_move_iterator(parts.end()));
++    }
++
++    const size_t group_size = std::max<size_t>(1, sentences_per_segment);
++    if (group_size == 1) {
++        return sentence_parts;
+     }
++
++    std::vector<std::string> segments;
++    std::string current;
++    size_t current_sentences = 0;
++    auto flush_current = [&]() {
++        if (!current.empty()) {
++            segments.push_back(std::move(current));
++            current.clear();
++        }
++        current_sentences = 0;
++    };
++
++    for (const std::string & part : sentence_parts) {
++        const size_t separator_chars = current.empty() ? 0u : 1u;
++        const bool exceeds_char_limit =
++            max_chars_per_segment > 0 && !current.empty() &&
++            current.size() + separator_chars + part.size() > max_chars_per_segment;
++        if (!current.empty() &&
++            (current_sentences >= group_size || exceeds_char_limit)) {
++            flush_current();
++        }
++
++        if (!current.empty()) {
++            current.push_back(' ');
++        }
++        current += part;
++        ++current_sentences;
++    }
++
++    flush_current();
+     return segments;
+ }
+
+@@ -496,6 +588,7 @@ namespace s2
+                 bool segment_sentences = false;
+                 int32_t sentence_pause_ms = 180;
+                 int32_t segment_max_chars = 0;
++                int32_t segment_group_sentences = 1;
+                 StreamAudioFormat stream_audio_format = StreamAudioFormat::Wav;
+
+                 if (!req.form.has_field("text"))
+@@ -625,6 +718,11 @@ namespace s2
+                             segment_max_chars = std::max(0, val);
+                         }
+
++                        if (j.contains("segment_group_sentences")) {
++                            int32_t val = j["segment_group_sentences"].get<int32_t>();
++                            segment_group_sentences = std::max(0, val);
++                        }
++
+                         if (j.contains("low_latency")) {
+                             low_latency_mode = j["low_latency"].get<bool>();
+                         }
+@@ -703,7 +801,9 @@ namespace s2
+                 std::vector<std::string> segmented_texts;
+                 if (segment_sentences) {
+                     segmented_texts = split_text_for_segmented_synthesis(
+-                        pipelineParams.text, static_cast<size_t>(segment_max_chars));
++                        pipelineParams.text,
++                        static_cast<size_t>(segment_max_chars),
++                        static_cast<size_t>(segment_group_sentences));
+                     if (segmented_texts.empty()) {
+                         res.status = 400;
+                         res.set_content("Text did not produce any non-empty segments.", "text/plain");

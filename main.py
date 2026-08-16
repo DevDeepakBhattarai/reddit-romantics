@@ -39,10 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--vibevoice-device", choices=["auto", "cuda", "cpu"], default="auto")
     run.add_argument("--vibevoice-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
 
-    run.add_argument("--fish-device", choices=["hybrid", "cpu", "cuda"], default="hybrid")
-    run.add_argument("--fish-gpu-layers", type=int, default=20)
+    run.add_argument("--fish-gpu-layers", type=int, default=28)
     run.add_argument("--fish-temperature", type=float, default=1.0)
-    run.add_argument("--fish-seed", type=int, default=42)
     run.add_argument("--fish-reference-audio")
     run.add_argument("--fish-reference-text", default="")
 
@@ -92,10 +90,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
         vibevoice_seed=args.vibevoice_seed,
         vibevoice_device=args.vibevoice_device,
         vibevoice_dtype=args.vibevoice_dtype,
-        fish_device=args.fish_device,
         fish_gpu_layers=args.fish_gpu_layers,
         fish_temperature=args.fish_temperature,
-        fish_seed=args.fish_seed,
         fish_reference_audio=args.fish_reference_audio,
         fish_reference_text=args.fish_reference_text,
         background=args.background,

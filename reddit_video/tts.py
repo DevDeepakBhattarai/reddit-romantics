@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -10,6 +11,9 @@ from collections.abc import Callable
 from pathlib import Path
 
 LogFn = Callable[[str], None]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+os.environ.setdefault("HF_HOME", str(PROJECT_ROOT / ".work" / "hf-cache"))
+
 _VIBEVOICE_CACHE: dict[tuple[str, str, str], tuple[object, object]] = {}
 _GEMINI_PREVIEW_TEXT = (
     "Some stories start quietly, right before everything changes. "

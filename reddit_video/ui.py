@@ -18,9 +18,9 @@ from .tts import (
     get_vibevoice_voice_preview,
     list_vibevoice_presets,
 )
-from .tts_models import (
-    backend_runtime_status,
+from .fish import (
     cache_fish_reference_preset,
+    fish_runtime_status,
     list_fish_reference_presets,
     resolve_fish_reference_preset,
 )
@@ -40,12 +40,6 @@ TTS_ENGINE_CHOICES = [
 ]
 MAX_SPEAKER_SLOTS = 5
 
-AUDIO_TEST_STORY = (
-    "Speaker 0: I knew something was wrong when my phone lit up at two in the morning. [short pause]\n"
-    "Speaker 1: Don't panic, but I need to tell you something. [laugh]\n"
-    "Speaker 0: That was not remotely reassuring."
-)
-
 
 def _vibe_choices() -> list[str]:
     installed = list_vibevoice_presets(PROJECT_ROOT / "vendor" / "VibeVoice")
@@ -59,7 +53,7 @@ def _first_or_none(values: list[str], preferred: str | None = None) -> str | Non
 
 
 def _runtime_status_markdown() -> str:
-    status = backend_runtime_status(PROJECT_ROOT)["fish"]
+    status = fish_runtime_status(PROJECT_ROOT)
     ready = status.lower().startswith("ready") or status.lower().startswith("official fish ready")
     return (
         "**Local TTS runtime status**\n"
@@ -165,21 +159,10 @@ def build_ui() -> gr.Blocks:
 
                 with gr.Group(visible=False) as fish_settings:
                     gr.Markdown("### Fish Audio S2 Pro settings")
+                    gr.Markdown("Native Windows **unquantized F16 hybrid** runtime.")
                     with gr.Row():
-                        fish_device = gr.Dropdown(
-                            [
-                                ("Hybrid CPU + CUDA (unquantized F16)", "hybrid"),
-                                ("Official CPU / BF16", "cpu"),
-                                ("Official full CUDA", "cuda"),
-                            ],
-                            value="hybrid",
-                            label="Fish runtime",
-                        )
-                        fish_gpu_layers = gr.Slider(1, 36, value=28, step=1, label="CUDA transformer layers (hybrid)")
-                    with gr.Row():
-                        fish_half = gr.Checkbox(value=False, label="FP16 on official full-CUDA path only")
+                        fish_gpu_layers = gr.Slider(1, 36, value=28, step=1, label="CUDA transformer layers")
                         fish_temperature = gr.Slider(0.2, 1.5, value=1.0, step=0.05, label="Temperature")
-                        fish_seed = gr.Number(value=42, precision=0, label="Seed (official path)")
                     fish_reference_audio = gr.File(
                         label="Optional default Fish reference voice WAV (single-speaker fallback)",
                         file_types=["audio"],
@@ -263,19 +246,6 @@ def build_ui() -> gr.Blocks:
             speaker_fish_audio.append(speaker_fish_ref)
             speaker_fish_text.append(speaker_fish_transcript)
 
-        gr.Markdown("## Audio-only TTS test")
-        audio_test_text = gr.Textbox(
-            value=AUDIO_TEST_STORY,
-            lines=7,
-            label="Test transcript",
-        )
-        with gr.Row():
-            test_audio = gr.Button("Generate audio only", variant="primary")
-            refresh_runtime = gr.Button("Refresh TTS runtime status")
-        with gr.Row():
-            test_audio_output = gr.Audio(label="TTS test output", type="filepath")
-            test_audio_status = gr.Markdown()
-
         gr.Markdown("## Video and captions")
         with gr.Row():
             background = gr.Dropdown(
@@ -311,6 +281,7 @@ def build_ui() -> gr.Blocks:
 
         with gr.Row():
             refresh = gr.Button("Refresh files / voices")
+            refresh_runtime = gr.Button("Refresh Fish status")
             run = gr.Button("Generate video", variant="primary")
 
         with gr.Row():
@@ -404,12 +375,6 @@ def build_ui() -> gr.Blocks:
         for trigger in (story_text, story_file, story_upload, tts_engine):
             trigger.change(update_casting, casting_inputs, casting_outputs, show_progress="hidden")
         demo.load(update_casting, casting_inputs, casting_outputs, show_progress="hidden")
-        audio_test_text.change(
-            lambda text, engine: _casting_updates(text or "", engine),
-            [audio_test_text, tts_engine],
-            casting_outputs,
-            show_progress="hidden",
-        )
 
         def load_gemini_preview(voice: str | None, model: str | None):
             if not voice:
@@ -480,8 +445,7 @@ def build_ui() -> gr.Blocks:
             tts_engine,
             gemini_voice, gemini_model, gemini_preprocess, gemini_split, gemini_chunk_seconds,
             vibe_speaker, vibe_model, vibe_cfg, vibe_steps, vibe_seed, vibe_device, vibe_dtype,
-            fish_device, fish_gpu_layers, fish_half, fish_temperature, fish_seed,
-            fish_reference_audio, fish_reference_text,
+            fish_gpu_layers, fish_temperature, fish_reference_audio, fish_reference_text,
             *speaker_gemini_voices,
             *speaker_vibe_voices,
             *speaker_fish_presets,
@@ -501,7 +465,7 @@ def build_ui() -> gr.Blocks:
             tts_engine_value = values[cursor]; cursor += 1
             gemini_voice_value, gemini_model_value, gemini_preprocess_value, gemini_split_value, gemini_chunk_seconds_value = values[cursor:cursor + 5]; cursor += 5
             vibe_speaker_value, vibe_model_value, vibe_cfg_value, vibe_steps_value, vibe_seed_value, vibe_device_value, vibe_dtype_value = values[cursor:cursor + 7]; cursor += 7
-            fish_device_value, fish_gpu_layers_value, fish_half_value, fish_temperature_value, fish_seed_value, fish_reference_audio_value, fish_reference_text_value = values[cursor:cursor + 7]; cursor += 7
+            fish_gpu_layers_value, fish_temperature_value, fish_reference_audio_value, fish_reference_text_value = values[cursor:cursor + 4]; cursor += 4
             gemini_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
             vibe_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
             fish_preset_slots = list(values[cursor:cursor + MAX_SPEAKER_SLOTS]); cursor += MAX_SPEAKER_SLOTS
@@ -561,46 +525,13 @@ def build_ui() -> gr.Blocks:
                 vibevoice_device=vibe_device_value,
                 vibevoice_dtype=vibe_dtype_value,
                 vibevoice_speaker_voices=vibevoice_speaker_voices,
-                fish_device=fish_device_value,
                 fish_gpu_layers=int(fish_gpu_layers_value),
-                fish_half=bool(fish_half_value),
                 fish_temperature=float(fish_temperature_value),
-                fish_seed=int(fish_seed_value),
                 fish_reference_audio=fish_reference_audio_value or None,
                 fish_reference_text=fish_reference_text_value or "",
                 fish_speaker_references=fish_speaker_references,
                 **extra,
             )
-
-        def generate_audio_test(preview_text_value, *values):
-            logs: list[str] = []
-
-            def log(message: str) -> None:
-                logs.append(message)
-                print(message, flush=True)
-
-            try:
-                options = make_tts_options(preview_text_value, "tts_preview", *values)
-                result = RedditVideoPipeline(log=log).run_audio(options)
-                summary = (
-                    "### Audio ready\n"
-                    f"- Engine: **{options.tts_engine}**\n"
-                    f"- Audio: `{result.audio_path}`\n"
-                    f"- Duration: `{result.duration_seconds:.1f}s`\n"
-                    f"- Generation time: `{result.elapsed_seconds:.1f}s`"
-                )
-                return str(result.audio_path), summary
-            except Exception as exc:  # noqa: BLE001
-                traceback.print_exc()
-                tail = "\n".join(logs[-25:])
-                return None, f"### Audio test failed\n`{type(exc).__name__}: {exc}`\n\n```text\n{tail}\n```"
-
-        test_audio.click(
-            generate_audio_test,
-            inputs=[audio_test_text, *provider_inputs],
-            outputs=[test_audio_output, test_audio_status],
-            api_name="generate_audio_only",
-        )
 
         render_inputs = [
             background, background_upload, output_format, random_start,

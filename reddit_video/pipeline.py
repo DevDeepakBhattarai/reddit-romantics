@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from .captions import CAPTION_THEMES, convert_whisperx_json_to_ass
 from .tts import generate_gemini, generate_vibevoice
-from .tts_models import generate_fish_s2
+from .fish import generate_fish_s2
 from .tts_text import prepare_text_for_provider, validate_speaker_count
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,11 +48,8 @@ class PipelineOptions:
     vibevoice_dtype: str = "auto"
     vibevoice_speaker_voices: dict[int, str] = field(default_factory=dict)
 
-    fish_device: str = "hybrid"
     fish_gpu_layers: int = 28
-    fish_half: bool = False
     fish_temperature: float = 1.0
-    fish_seed: int = 42
     fish_reference_audio: str | Path | None = None
     fish_reference_text: str = ""
     fish_speaker_references: dict[int, tuple[str | Path, str]] = field(default_factory=dict)
@@ -86,12 +83,6 @@ class PipelineResult:
     whisper_json_path: Path | None
     elapsed_seconds: float
 
-
-@dataclass(frozen=True)
-class AudioPipelineResult:
-    audio_path: Path
-    elapsed_seconds: float
-    duration_seconds: float
 
 
 def slugify(value: str, fallback: str = "story") -> str:
@@ -277,11 +268,8 @@ class RedditVideoPipeline:
             self.root,
             prepared_text,
             audio_path,
-            device=options.fish_device,
             gpu_layers=options.fish_gpu_layers,
-            half=options.fish_half,
             temperature=options.fish_temperature,
-            seed=options.fish_seed,
             reference_audio=options.fish_reference_audio,
             reference_text=options.fish_reference_text,
             speaker_references=selected_refs,
@@ -515,20 +503,6 @@ class RedditVideoPipeline:
             str(output),
         ])
         self._run_streamed(command, self.root)
-
-    def run_audio(self, options: PipelineOptions) -> AudioPipelineResult:
-        started = time.perf_counter()
-        story_path, story_text, base = self._prepare_story(options)
-        work_dir = self.root / ".work" / "audio_tests"
-        work_dir.mkdir(parents=True, exist_ok=True)
-        audio_path = work_dir / f"{base}_{slugify(options.tts_engine, 'tts')}.wav"
-        self._stage(0.05, f"Story loaded: {story_path.name}")
-        self._generate_narration(options, story_path, story_text, audio_path)
-        duration = self._audio_duration(audio_path)
-        self._validate_narration_duration(story_text, duration)
-        elapsed = time.perf_counter() - started
-        self._stage(1.0, f"Audio ready: {audio_path}")
-        return AudioPipelineResult(audio_path=audio_path, elapsed_seconds=elapsed, duration_seconds=duration)
 
     def run(self, options: PipelineOptions) -> PipelineResult:
         started = time.perf_counter()
