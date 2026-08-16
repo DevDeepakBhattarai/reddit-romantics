@@ -11,6 +11,10 @@ from pathlib import Path
 
 LogFn = Callable[[str], None]
 _VIBEVOICE_CACHE: dict[tuple[str, str, str], tuple[object, object]] = {}
+_GEMINI_PREVIEW_TEXT = (
+    "Some stories start quietly, right before everything changes. "
+    "This is where ours begins."
+)
 
 
 def _run(command: list[str], cwd: Path, log: LogFn) -> None:
@@ -33,6 +37,84 @@ def _run(command: list[str], cwd: Path, log: LogFn) -> None:
     code = process.wait()
     if code != 0:
         raise RuntimeError(f"Command failed with exit code {code}: {subprocess.list2cmdline(command)}")
+
+
+def _safe_filename(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    return safe.strip("._") or "default"
+
+
+def get_gemini_voice_preview(
+    project_root: Path,
+    voice: str,
+    model: str,
+    log: LogFn,
+) -> Path:
+    """Return a cached short Gemini voice preview, generating it once when needed."""
+    voice = voice.strip()
+    model = model.strip()
+    if not voice:
+        raise ValueError("Select a Gemini voice before loading a preview.")
+    if not model:
+        raise ValueError("Enter a Gemini TTS model before loading a preview.")
+
+    cache_dir = project_root / ".work" / "voice_previews" / "gemini"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = cache_dir / f"{_safe_filename(model)}__{_safe_filename(voice)}.wav"
+    if preview_path.exists() and preview_path.stat().st_size > 44:
+        return preview_path
+
+    script = project_root / "gemini-tts" / "gemini_tts.py"
+    if not script.exists():
+        raise FileNotFoundError(f"Gemini TTS script is missing: {script}")
+
+    gemini_input = project_root / "gemini-tts" / "input"
+    gemini_output = project_root / "gemini-tts" / "output"
+    gemini_input.mkdir(parents=True, exist_ok=True)
+    gemini_output.mkdir(parents=True, exist_ok=True)
+
+    stem = f"__voice_preview_{_safe_filename(model)}_{_safe_filename(voice)}"
+    staged_input = gemini_input / f"{stem}.txt"
+    generated = gemini_output / f"{stem}.wav"
+    staged_input.write_text(_GEMINI_PREVIEW_TEXT, encoding="utf-8")
+    try:
+        try:
+            generated.unlink()
+        except FileNotFoundError:
+            pass
+        log(f"Generating one-time Gemini preview for {voice}; later previews use the local cache.")
+        _run(
+            [
+                sys.executable,
+                str(script),
+                "--text_file",
+                staged_input.name,
+                "--voice",
+                voice,
+                "--model",
+                model,
+                "--chunk-seconds",
+                "60",
+                "--max-retries",
+                "2",
+                "--high_quality",
+            ],
+            project_root,
+            log,
+        )
+        if not generated.exists() or generated.stat().st_size <= 44:
+            raise RuntimeError(f"Gemini preview generation did not create valid audio: {generated}")
+        shutil.copyfile(generated, preview_path)
+    finally:
+        for temporary_path in (staged_input, generated):
+            try:
+                temporary_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    return preview_path
 
 
 def generate_gemini(
@@ -120,6 +202,13 @@ def _resolve_voice(vibevoice_root: Path, speaker_name: str) -> Path:
             return path
     available = ", ".join(list_vibevoice_presets(vibevoice_root))
     raise ValueError(f"Unknown VibeVoice speaker '{speaker_name}'. Available presets: {available}")
+
+
+def get_vibevoice_voice_preview(project_root: Path, speaker_name: str) -> Path:
+    """Return the exact WAV reference sample used by the selected VibeVoice preset."""
+    if not speaker_name or not speaker_name.strip():
+        raise ValueError("Select a VibeVoice speaker before loading a preview.")
+    return _resolve_voice(project_root / "vendor" / "VibeVoice", speaker_name)
 
 
 def _format_vibevoice_script(story_text: str) -> str:
