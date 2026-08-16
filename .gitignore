@@ -26,3 +26,5 @@ output/*
 
 # Keep placeholder files if added later
 !output/.gitkeep
+# Persistent user voice presets (local-only)
+voice_presets/

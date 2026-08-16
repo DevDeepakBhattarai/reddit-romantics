@@ -199,3 +199,82 @@ def test_runtime_status_does_not_import_or_download_models(tmp_path):
         "not installed" in value.lower() or "incomplete" in value.lower()
         for value in statuses.values()
     )
+
+
+def test_fish_saved_reference_presets_are_listed_and_resolved(tmp_path: Path):
+    preset = tmp_path / "vendor" / "fish-speech" / "references" / "deep-male"
+    preset.mkdir(parents=True)
+    audio = preset / "sample.wav"
+    audio.write_bytes(b"wav")
+    (preset / "sample.lab").write_text("This is the exact reference transcript.", encoding="utf-8")
+
+    assert tts_models.list_fish_reference_presets(tmp_path) == ["deep-male"]
+    resolved_audio, resolved_text = tts_models.resolve_fish_reference_preset(tmp_path, "deep-male")
+    assert resolved_audio == audio
+    assert resolved_text == "This is the exact reference transcript."
+
+
+def test_fish_uploaded_reference_is_cached_for_future_sessions(tmp_path: Path):
+    source = tmp_path / "girl voice.wav"
+    source.write_bytes(b"voice-bytes")
+
+    preset_id, cached_audio, cached_text = tts_models.cache_fish_reference_preset(
+        tmp_path, source, "Hello from the reference clip.", "e-girl"
+    )
+
+    assert preset_id == "e-girl"
+    assert cached_audio == tmp_path / "voice_presets" / "fish" / "e-girl" / "sample.wav"
+    assert cached_audio.read_bytes() == b"voice-bytes"
+    assert cached_text == "Hello from the reference clip."
+    assert tts_models.list_fish_reference_presets(tmp_path) == ["e-girl"]
+    resolved_audio, resolved_text = tts_models.resolve_fish_reference_preset(tmp_path, "e-girl")
+    assert resolved_audio == cached_audio
+    assert resolved_text == cached_text
+
+
+def test_fish_cache_deduplicates_identical_unnamed_uploaded_voice(tmp_path: Path):
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    first.write_bytes(b"same-voice")
+    second.write_bytes(b"same-voice")
+
+    first_id, first_audio, _ = tts_models.cache_fish_reference_preset(
+        tmp_path, first, "Same transcript"
+    )
+    second_id, second_audio, _ = tts_models.cache_fish_reference_preset(
+        tmp_path, second, "Same transcript"
+    )
+
+    assert first_id == second_id == "first"
+    assert first_audio == second_audio
+    assert tts_models.list_fish_reference_presets(tmp_path) == ["first"]
+
+
+def test_fish_explicit_preset_name_is_always_honored(tmp_path: Path):
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    first.write_bytes(b"same-voice")
+    second.write_bytes(b"same-voice")
+
+    tts_models.cache_fish_reference_preset(tmp_path, first, "Same transcript", "old-name")
+    preset_id, _audio, _text = tts_models.cache_fish_reference_preset(
+        tmp_path, second, "Same transcript", "e-girl"
+    )
+
+    assert preset_id == "e-girl"
+    assert tts_models.list_fish_reference_presets(tmp_path) == ["e-girl", "old-name"]
+
+
+def test_user_fish_preset_takes_precedence_over_native_reference(tmp_path: Path):
+    user = tmp_path / "voice_presets" / "fish" / "same-name"
+    native = tmp_path / "vendor" / "fish-speech" / "references" / "same-name"
+    user.mkdir(parents=True)
+    native.mkdir(parents=True)
+    (user / "sample.wav").write_bytes(b"user")
+    (user / "sample.lab").write_text("user transcript", encoding="utf-8")
+    (native / "sample.wav").write_bytes(b"native")
+    (native / "sample.lab").write_text("native transcript", encoding="utf-8")
+
+    audio, text = tts_models.resolve_fish_reference_preset(tmp_path, "same-name")
+    assert audio.read_bytes() == b"user"
+    assert text == "user transcript"

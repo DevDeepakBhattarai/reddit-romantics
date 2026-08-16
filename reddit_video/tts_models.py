@@ -1,7 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -28,6 +30,7 @@ def _wsl_home() -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
+        check=False,
     )
     home = result.stdout.strip()
     if result.returncode != 0 or not home:
@@ -216,6 +219,188 @@ def _fish_s2_native_assets(project_root: Path) -> tuple[Path, Path]:
     return model, tokenizer
 
 
+_FISH_REFERENCE_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
+
+
+def _fish_user_preset_root(project_root: Path) -> Path:
+    return project_root / "voice_presets" / "fish"
+
+
+def _fish_native_reference_root(project_root: Path) -> Path:
+    return project_root / "vendor" / "fish-speech" / "references"
+
+
+def _safe_voice_preset_id(value: str, fallback: str = "voice") -> str:
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip(".-_")
+    return value[:80] or fallback
+
+
+def _valid_fish_preset_folders(reference_root: Path) -> list[Path]:
+    if not reference_root.exists():
+        return []
+    folders: list[Path] = []
+    for folder in sorted(reference_root.iterdir(), key=lambda item: item.name.lower()):
+        if not folder.is_dir():
+            continue
+        if any(
+            audio.is_file()
+            and audio.suffix.lower() in _FISH_REFERENCE_AUDIO_EXTENSIONS
+            and audio.with_suffix(".lab").is_file()
+            for audio in folder.iterdir()
+        ):
+            folders.append(folder)
+    return folders
+
+
+def list_fish_reference_presets(project_root: Path) -> list[str]:
+    """List persistent user presets plus native Fish reference IDs."""
+    names = {folder.name for folder in _valid_fish_preset_folders(_fish_user_preset_root(project_root))}
+    names.update(folder.name for folder in _valid_fish_preset_folders(_fish_native_reference_root(project_root)))
+    return sorted(names, key=str.lower)
+
+
+def _resolve_fish_preset_folder(project_root: Path, preset_id: str) -> Path:
+    preset_id = preset_id.strip()
+    if not preset_id:
+        raise ValueError("Choose a Fish voice preset or upload a reference clip for this speaker.")
+    if any(part in preset_id for part in ("/", "\\", "..")):
+        raise ValueError(f"Invalid Fish voice preset ID: {preset_id!r}")
+    for root in (_fish_user_preset_root(project_root), _fish_native_reference_root(project_root)):
+        folder = root / preset_id
+        if folder.is_dir():
+            return folder
+    raise FileNotFoundError(f"Fish voice preset not found: {preset_id}")
+
+
+def resolve_fish_reference_preset(project_root: Path, preset_id: str) -> tuple[Path, str]:
+    """Resolve one persistent/native Fish preset to an audio file and exact transcript."""
+    folder = _resolve_fish_preset_folder(project_root, preset_id)
+    for audio in sorted(folder.iterdir(), key=lambda item: item.name.lower()):
+        if not audio.is_file() or audio.suffix.lower() not in _FISH_REFERENCE_AUDIO_EXTENSIONS:
+            continue
+        transcript_path = audio.with_suffix(".lab")
+        if not transcript_path.is_file():
+            continue
+        transcript = transcript_path.read_text(encoding="utf-8-sig").strip()
+        if transcript:
+            return audio, transcript
+    raise ValueError(
+        f"Fish voice preset '{preset_id}' has no valid audio + matching .lab transcript pair."
+    )
+
+
+def cache_fish_reference_preset(
+    project_root: Path,
+    audio_path: str | Path,
+    transcript: str,
+    preset_name: str = "",
+) -> tuple[str, Path, str]:
+    """Persist an uploaded Fish reference so it can be reused in later sessions.
+
+    A supplied name is stable and replaces that named preset. If the name is blank,
+    the upload filename is used. Identical content is deduplicated by SHA-256.
+    """
+    source = Path(audio_path)
+    if not source.is_file():
+        raise FileNotFoundError(f"Fish reference audio not found: {source}")
+    if source.suffix.lower() not in _FISH_REFERENCE_AUDIO_EXTENSIONS:
+        raise ValueError(f"Unsupported Fish reference audio format: {source.suffix}")
+    transcript = transcript.strip()
+    if not transcript:
+        raise ValueError("Fish voice preset requires the exact transcript of its reference audio.")
+
+    audio_bytes = source.read_bytes()
+    digest = hashlib.sha256(audio_bytes + b"\0" + transcript.encode("utf-8")).hexdigest()
+    root = _fish_user_preset_root(project_root)
+    root.mkdir(parents=True, exist_ok=True)
+
+    requested_name = preset_name.strip()
+    if not requested_name:
+        # For unnamed uploads, avoid storing the exact same reference more than once.
+        for folder in _valid_fish_preset_folders(root):
+            metadata_path = folder / "preset.json"
+            if metadata_path.is_file():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    metadata = {}
+                if metadata.get("sha256") == digest:
+                    audio, saved_transcript = resolve_fish_reference_preset(project_root, folder.name)
+                    return folder.name, audio, saved_transcript
+
+    requested = requested_name or source.stem
+    preset_id = _safe_voice_preset_id(requested, fallback=f"voice-{digest[:8]}")
+    folder = root / preset_id
+    if folder.exists():
+        shutil.rmtree(folder)
+    folder.mkdir(parents=True, exist_ok=False)
+
+    destination = folder / f"sample{source.suffix.lower()}"
+    shutil.copy2(source, destination)
+    destination.with_suffix(".lab").write_text(transcript, encoding="utf-8")
+    (folder / "preset.json").write_text(
+        json.dumps(
+            {
+                "name": preset_id,
+                "sha256": digest,
+                "source_filename": source.name,
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return preset_id, destination, transcript
+
+
+def _merge_fish_reference_audio(references: list[Path], output_path: Path, log: LogFn) -> Path:
+    """Concatenate per-speaker reference clips into the single reference stream s2.cpp expects."""
+    if len(references) == 1:
+        return references[0]
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is required to combine multiple Fish speaker reference clips for hybrid mode.")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
+    for reference in references:
+        command.extend(["-i", str(reference)])
+    normalized = []
+    for index in range(len(references)):
+        normalized.append(
+            f"[{index}:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono[a{index}]"
+        )
+    inputs = "".join(f"[a{index}]" for index in range(len(references)))
+    filter_graph = ";".join(normalized + [f"{inputs}concat=n={len(references)}:v=0:a=1[out]"])
+    command.extend([
+        "-filter_complex",
+        filter_graph,
+        "-map", "[out]",
+        "-ar", "44100",
+        "-ac", "1",
+        "-c:a", "pcm_s16le",
+        str(output_path),
+    ])
+    log(f"Fish hybrid: combining {len(references)} per-speaker reference clips into one tagged reference stream.")
+    _run(command, output_path.parent, log)
+    return output_path
+
+
+def _validated_fish_speaker_references(
+    speaker_references: dict[int, tuple[str | Path, str]] | None,
+) -> list[tuple[int, Path, str]]:
+    validated: list[tuple[int, Path, str]] = []
+    for speaker_id, (audio, transcript) in sorted((speaker_references or {}).items()):
+        path = Path(audio)
+        if not path.exists():
+            raise FileNotFoundError(f"Fish reference audio for Speaker {speaker_id} not found: {path}")
+        if not transcript.strip():
+            raise ValueError(f"Fish reference transcript is required for Speaker {speaker_id}.")
+        validated.append((speaker_id, path, transcript.strip()))
+    if validated and [speaker_id for speaker_id, _, _ in validated] != list(range(len(validated))):
+        raise ValueError("Fish speaker references must use contiguous speaker IDs starting at 0.")
+    return validated
+
+
 def _generate_fish_s2_hybrid(
     project_root: Path,
     text: str,
@@ -226,6 +411,7 @@ def _generate_fish_s2_hybrid(
     reference_audio: str | Path | None,
     reference_text: str,
     log: LogFn,
+    speaker_references: dict[int, tuple[str | Path, str]] | None = None,
 ) -> Path:
     binary = _fish_s2_native_binary(project_root)
     model, tokenizer = _fish_s2_native_assets(project_root)
@@ -256,7 +442,18 @@ def _generate_fish_s2_hybrid(
         "--temperature", str(float(temperature)),
         "--max-tokens", os.getenv("TTS_FISH_MAX_TOKENS", "4096"),
     ]
-    if reference_audio:
+    refs = _validated_fish_speaker_references(speaker_references)
+    if refs:
+        merged_audio = _merge_fish_reference_audio(
+            [ref for _, ref, _ in refs],
+            output_path.parent / f".{output_path.stem}_fish" / "multi_speaker_reference.wav",
+            log,
+        )
+        tagged_text = "\n".join(
+            f"<|speaker:{speaker_id}|>{transcript}" for speaker_id, _, transcript in refs
+        )
+        command.extend(["--prompt-audio", str(merged_audio), "--prompt-text", tagged_text])
+    elif reference_audio:
         ref = Path(reference_audio)
         if not ref.exists():
             raise FileNotFoundError(f"Fish reference audio not found: {ref}")
@@ -279,12 +476,14 @@ def generate_fish_s2(
     seed: int = 42,
     reference_audio: str | Path | None = None,
     reference_text: str = "",
+    speaker_references: dict[int, tuple[str | Path, str]] | None = None,
     log: LogFn,
 ) -> Path:
     if device == "hybrid":
         return _generate_fish_s2_hybrid(
             project_root, text, output_path, gpu_layers=gpu_layers, temperature=temperature,
             reference_audio=reference_audio, reference_text=reference_text, log=log,
+            speaker_references=speaker_references,
         )
 
     root = _repo_root(project_root, "fish", "fish-speech")
@@ -358,7 +557,14 @@ def generate_fish_s2(
     ]
     if half and device != "cpu":
         command.append("--half")
-    if reference_audio:
+    refs = _validated_fish_speaker_references(speaker_references)
+    if refs:
+        for speaker_id, ref, transcript in refs:
+            command.extend([
+                "--prompt-audio", _for_runtime(ref, use_wsl),
+                "--prompt-text", f"<|speaker:{speaker_id}|>{transcript}",
+            ])
+    elif reference_audio:
         ref = Path(reference_audio)
         if not ref.exists():
             raise FileNotFoundError(f"Fish reference audio not found: {ref}")
