@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from reddit_video.captions import CAPTION_THEMES
 from reddit_video.fish import list_fish_reference_presets, resolve_fish_reference_preset
+from reddit_video.job_queue import VideoJobQueue
 from reddit_video.pipeline import PipelineOptions, RedditVideoPipeline, list_background_videos, list_input_stories
 from reddit_video.runs import create_story_run, list_story_runs
 from reddit_video.tts import list_vibevoice_presets
@@ -38,6 +40,49 @@ def _add_render_args(parser: argparse.ArgumentParser, *, full: bool) -> None:
     parser.add_argument("--audio-bitrate", default="128k")
 
 
+def _add_pipeline_args(parser: argparse.ArgumentParser, *, run_dir_required: bool = False) -> None:
+    parser.add_argument(
+        "--run-dir",
+        required=run_dir_required,
+        help="Existing runs/<timestamp>_<title> folder. Reads story.md from it.",
+    )
+    parser.add_argument("--story-file", help="Story file. Legacy/external files are copied into a new run folder.")
+    parser.add_argument("--story-text", default="", help="Story text directly on the command line")
+    parser.add_argument("--output-name", default="", help="Title used only when a new run folder must be created")
+
+    parser.add_argument("--tts", choices=["gemini", "vibevoice", "fish"], default="fish")
+    parser.add_argument(
+        "--speaker-preset",
+        action="append",
+        default=[],
+        metavar="ID=PRESET",
+        help="Optional voice override. Fish auto-casts from story gender metadata when omitted; repeat for manual overrides.",
+    )
+    parser.add_argument("--gemini-voice", default="Kore")
+    parser.add_argument("--gemini-model", default="gemini-3.1-flash-tts-preview")
+    parser.add_argument("--no-gemini-preprocess", action="store_true")
+    parser.add_argument("--no-gemini-split", action="store_true")
+    parser.add_argument("--gemini-chunk-seconds", type=int, default=180)
+    parser.add_argument("--vibevoice-model", default="microsoft/VibeVoice-1.5B")
+    parser.add_argument("--vibevoice-speaker", default="Alice")
+    parser.add_argument("--vibevoice-cfg-scale", type=float, default=1.3)
+    parser.add_argument("--vibevoice-diffusion-steps", type=int, default=10)
+    parser.add_argument("--vibevoice-seed", type=int, default=42)
+    parser.add_argument("--vibevoice-device", choices=["auto", "cuda", "cpu"], default="auto")
+    parser.add_argument("--vibevoice-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
+    parser.add_argument("--fish-gpu-layers", type=int, default=28)
+    parser.add_argument("--fish-temperature", type=float, default=1.0)
+    parser.add_argument("--fish-reference-audio")
+    parser.add_argument("--fish-reference-text", default="")
+
+    _add_render_args(parser, full=True)
+    parser.add_argument("--whisper-model", default="large-v2")
+    parser.add_argument("--whisper-language", default="en")
+    parser.add_argument("--whisper-align-model", default="WAV2VEC2_ASR_LARGE_LV60K_960H")
+    parser.add_argument("--whisper-compute-type", default="float16")
+    parser.add_argument("--whisperx-command", default="")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Reddit Romantics video automation")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -45,44 +90,17 @@ def build_parser() -> argparse.ArgumentParser:
     new_run = subparsers.add_parser("new-run", help="Create one dated story workspace under runs/")
     new_run.add_argument("--title", required=True, help="Short human-readable story title")
 
-    run = subparsers.add_parser("run", help="Generate the full video and transcript for one story run")
-    run.add_argument("--run-dir", help="Existing runs/<timestamp>_<title> folder. Reads story.md from it.")
-    run.add_argument("--story-file", help="Story file. Legacy/external files are copied into a new run folder.")
-    run.add_argument("--story-text", default="", help="Story text directly on the command line")
-    run.add_argument("--output-name", default="", help="Title used only when a new run folder must be created")
+    run = subparsers.add_parser("run", help="Generate one video run synchronously and wait for completion")
+    _add_pipeline_args(run)
 
-    run.add_argument("--tts", choices=["gemini", "vibevoice", "fish"], default="fish")
-    run.add_argument(
-        "--speaker-preset",
-        action="append",
-        default=[],
-        metavar="ID=PRESET",
-        help="Optional voice override. Fish auto-casts from story gender metadata when omitted; repeat for manual overrides.",
+    enqueue = subparsers.add_parser(
+        "enqueue",
+        help="Queue a run for detached sequential background processing and return immediately",
     )
-    run.add_argument("--gemini-voice", default="Kore")
-    run.add_argument("--gemini-model", default="gemini-3.1-flash-tts-preview")
-    run.add_argument("--no-gemini-preprocess", action="store_true")
-    run.add_argument("--no-gemini-split", action="store_true")
-    run.add_argument("--gemini-chunk-seconds", type=int, default=180)
-    run.add_argument("--vibevoice-model", default="microsoft/VibeVoice-1.5B")
-    run.add_argument("--vibevoice-speaker", default="Alice")
-    run.add_argument("--vibevoice-cfg-scale", type=float, default=1.3)
-    run.add_argument("--vibevoice-diffusion-steps", type=int, default=10)
-    run.add_argument("--vibevoice-seed", type=int, default=42)
-    run.add_argument("--vibevoice-device", choices=["auto", "cuda", "cpu"], default="auto")
-    run.add_argument("--vibevoice-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
-    run.add_argument("--fish-gpu-layers", type=int, default=28)
-    run.add_argument("--fish-temperature", type=float, default=1.0)
-    run.add_argument("--fish-reference-audio")
-    run.add_argument("--fish-reference-text", default="")
+    _add_pipeline_args(enqueue, run_dir_required=True)
 
-    _add_render_args(run, full=True)
-    run.add_argument("--whisper-model", default="large-v2")
-    run.add_argument("--whisper-language", default="en")
-    run.add_argument("--whisper-align-model", default="WAV2VEC2_ASR_LARGE_LV60K_960H")
-    run.add_argument("--whisper-compute-type", default="float16")
-    run.add_argument("--whisperx-command", default="")
-
+    subparsers.add_parser("queue-status", help="Show pending/running/completed/failed video queue jobs")
+    subparsers.add_parser("queue-worker", help=argparse.SUPPRESS)
 
     ui = subparsers.add_parser("ui", help="Launch the Gradio browser UI")
     ui.add_argument("--host", default="127.0.0.1")
@@ -163,6 +181,29 @@ def run_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_queued_job(job: dict, log_path: Path) -> int:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8", buffering=1) as log, redirect_stdout(log), redirect_stderr(log):
+        print(f"Queue job: {job['id']}")
+        print(f"Run: {job['run_dir']}")
+        print(f"Arguments: {' '.join(job['run_args'])}")
+        queued_args = build_parser().parse_args(["run", *job["run_args"]])
+        return run_pipeline(queued_args)
+
+
+def _print_queue_status(queue: VideoJobQueue) -> None:
+    snapshot = queue.snapshot()
+    for state in ("running", "pending", "failed", "completed"):
+        jobs = snapshot[state]
+        print(f"{state.capitalize()}: {len(jobs)}")
+        for job in jobs[-10:]:
+            run_name = Path(job.get("run_dir", "unknown")).name
+            detail = f" - {job.get('id', '?')} - {run_name}"
+            if job.get("error"):
+                detail += f" - {job['error']}"
+            print(detail)
+
+
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -174,6 +215,25 @@ def main() -> int:
         return 0
     if args.command == "run":
         return run_pipeline(args)
+    if args.command == "enqueue":
+        queue = VideoJobQueue(ROOT)
+        # Preserve the exact pipeline arguments. The worker parses these as a normal `run`
+        # command later, so enqueueing stays fast and does not initialize any heavy models.
+        run_args = sys.argv[2:]
+        job, created = queue.enqueue(args.run_dir, run_args)
+        worker_pid = queue.start_detached_worker(Path(__file__))
+        if created:
+            print(f"Queued video job {job['id']} for {job['run_dir']}")
+        else:
+            print(f"Run is already queued as {job['id']}: {job['run_dir']}")
+        print(f"Detached queue worker launch PID: {worker_pid}")
+        print("The worker will process queued jobs one at a time and exit after the queue is empty.")
+        return 0
+    if args.command == "queue-worker":
+        return VideoJobQueue(ROOT).run_worker(_run_queued_job)
+    if args.command == "queue-status":
+        _print_queue_status(VideoJobQueue(ROOT))
+        return 0
     if args.command == "ui":
         from reddit_video.ui import build_ui
 
