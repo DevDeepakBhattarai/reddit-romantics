@@ -126,6 +126,55 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
 
+
+def trim_whisperx_json(
+    input_file: str | Path,
+    output_file: str | Path,
+    end_time: float,
+) -> Path:
+    """Create a transcript containing only timestamps before ``end_time``.
+
+    Shorts always begin at the start of the story, so timestamps do not need to be shifted.
+    """
+    if end_time <= 0:
+        raise ValueError("Short end time must be greater than zero.")
+
+    input_path = Path(input_file)
+    output_path = Path(output_file)
+    with input_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+
+    def keep_word(word: dict[str, Any]) -> bool:
+        start = word.get("start")
+        return start is not None and float(start) < end_time
+
+    def trim_word(word: dict[str, Any]) -> dict[str, Any]:
+        result = dict(word)
+        if result.get("end") is not None:
+            result["end"] = min(float(result["end"]), end_time)
+        return result
+
+    if isinstance(data.get("word_segments"), list):
+        data["word_segments"] = [trim_word(word) for word in data["word_segments"] if keep_word(word)]
+
+    trimmed_segments: list[dict[str, Any]] = []
+    for segment in data.get("segments", []) or []:
+        start = segment.get("start")
+        if start is None or float(start) >= end_time:
+            continue
+        item = dict(segment)
+        if item.get("end") is not None:
+            item["end"] = min(float(item["end"]), end_time)
+        if isinstance(item.get("words"), list):
+            item["words"] = [trim_word(word) for word in item["words"] if keep_word(word)]
+        trimmed_segments.append(item)
+    if "segments" in data:
+        data["segments"] = trimmed_segments
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return output_path
+
 def convert_whisperx_json_to_ass(
     input_file: str | Path,
     output_file: str | Path,

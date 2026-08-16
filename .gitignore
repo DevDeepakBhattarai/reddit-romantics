@@ -20,16 +20,12 @@ vendor/
 # Secrets
 .env
 
-# Generated media/output
+# Generated story/video runs
+runs/
 *.mp4
-output/*
-*/output/*
-
-# Keep placeholder files if added later
-!output/.gitkeep
 # Persistent user voice presets (local-only)
 voice_presets/
-# Pipeline-generated story staging files
-input/story_*.txt
-input/tts_preview.txt
+# Gemini worker staging files
 gemini-tts/input/story_*.txt
+
+gemini-tts/output/

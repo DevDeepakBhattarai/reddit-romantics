@@ -97,7 +97,7 @@ def build_ui() -> gr.Blocks:
         with gr.Row():
             with gr.Column(scale=3):
                 story_file = gr.Dropdown(
-                    label="Story file (optional when pasting text)",
+                    label="Existing run story (optional when pasting text)",
                     choices=stories,
                     value=_first_or_none(stories),
                     allow_custom_value=True,
@@ -107,22 +107,22 @@ def build_ui() -> gr.Blocks:
                     label="Story text (takes priority over file)",
                     lines=16,
                     placeholder=(
-                        "Speaker 0 - Maya, narrator. Warm and quick-witted.\n"
-                        "Speaker 1 - Adrian. Deep, controlled voice.\n\n"
+                        "Speaker 0 - gender=female; Maya; narrator; warm and quick-witted.\n"
+                        "Speaker 1 - gender=male; Adrian; main counterpart; deep, controlled voice.\n\n"
                         "Speaker 0: The first time Adrian kissed me...\n"
                         "Speaker 1: Maya."
                     ),
                 )
-                output_name = gr.Textbox(label="Output name (optional)", placeholder="my_story")
+                output_name = gr.Textbox(label="Story / run title (optional)", placeholder="my story")
 
             with gr.Column(scale=2):
                 tts_engine = gr.Radio(
                     choices=TTS_ENGINE_CHOICES,
-                    value="gemini",
+                    value="fish",
                     label="Narration engine",
                 )
 
-                with gr.Group(visible=True) as gemini_settings:
+                with gr.Group(visible=False) as gemini_settings:
                     gr.Markdown("### Gemini TTS settings")
                     gemini_voice = gr.Dropdown(GEMINI_VOICES, value="Kore", label="Default / single-speaker voice")
                     gemini_preview = gr.Audio(label="Gemini voice preview", type="filepath", interactive=False)
@@ -157,7 +157,7 @@ def build_ui() -> gr.Blocks:
                         "model does not expose a stable documented tag language."
                     )
 
-                with gr.Group(visible=False) as fish_settings:
+                with gr.Group(visible=True) as fish_settings:
                     gr.Markdown("### Fish Audio S2 Pro settings")
                     gr.Markdown("Native Windows **unquantized F16 hybrid** runtime.")
                     with gr.Row():
@@ -183,7 +183,7 @@ def build_ui() -> gr.Blocks:
 
         gr.Markdown("## Speaker voice assignments ? required")
         speaker_status = gr.Markdown(
-            "Every speaker gets an explicit voice assignment. The model is never allowed to choose a speaker voice implicitly."
+            "Fish auto-casts from `gender=male` / `gender=female` story metadata. Manual Fish presets are optional overrides."
         )
 
         speaker_groups: list[gr.Group] = []
@@ -214,10 +214,10 @@ def build_ui() -> gr.Blocks:
                     )
                     speaker_fish_preset = gr.Dropdown(
                         choices=fish_presets,
-                        value=_first_or_none(fish_presets),
+                        value=None,
                         allow_custom_value=True,
-                        label="Fish saved voice preset",
-                        info="Optional when uploading a reference below. Upload overrides this preset.",
+                        label="Fish preset override",
+                        info="Leave blank for automatic male/female casting from story metadata. Upload overrides this preset.",
                         visible=False,
                     )
                     speaker_fish_preset_name = gr.Textbox(
@@ -256,8 +256,8 @@ def build_ui() -> gr.Blocks:
             )
             background_upload = gr.File(label="Upload custom background", file_types=["video"], type="filepath")
             output_format = gr.Radio(
-                choices=[("YouTube Shorts 1080x1920", "shorts"), ("Keep source dimensions", "source")],
-                value="shorts",
+                choices=[("Keep source dimensions (full video)", "source"), ("Vertical 1080x1920", "shorts")],
+                value="source",
                 label="Output format",
             )
             random_start = gr.Checkbox(value=True, label="Randomize background start")
@@ -292,9 +292,9 @@ def build_ui() -> gr.Blocks:
 
         def provider_visibility(engine: str):
             descriptions = {
-                "gemini": "**Gemini:** native 1–2 speaker casting; supported generic tags are normalized to Gemini bracket tags.",
-                "vibevoice": "**VibeVoice:** native 1–4 speaker casting from WAV voice presets; decorator markup is removed before inference.",
-                "fish": "**Fish S2 Pro:** each uploaded reference is cached as a reusable persistent preset; native multi-speaker tokens and bracket controls are retained/normalized.",
+                "gemini": "**Gemini:** native 1â€“2 speaker casting; supported generic tags are normalized to Gemini bracket tags.",
+                "vibevoice": "**VibeVoice:** native 1â€“4 speaker casting from WAV voice presets; decorator markup is removed before inference.",
+                "fish": "**Fish S2 Pro (default):** story gender metadata auto-selects the male/female presets; manual preset or upload overrides remain available.",
             }
             return (
                 gr.update(visible=engine == "gemini"),
@@ -334,7 +334,7 @@ def build_ui() -> gr.Blocks:
                 )
             elif speakers:
                 message = (
-                    f"**{len(speakers)} speaker(s) detected.** Every visible row below is an explicit, required voice assignment."
+                    f"**{len(speakers)} speaker(s) detected.** Fish casts automatically from speaker gender metadata; visible preset rows are overrides."
                 )
             else:
                 message = (
@@ -585,11 +585,19 @@ def build_ui() -> gr.Blocks:
                 )
                 result = RedditVideoPipeline(log=log).run(options)
                 caption = str(result.caption_path) if result.caption_path else "disabled"
+                short_summary = (
+                    f"\n- Short: `{result.short_video_path}` at `{result.short_end_seconds:.2f}s`"
+                    if result.short_video_path and result.short_end_seconds is not None
+                    else "\n- Short: skipped (no [[SHORTS_CLIFFHANGER]] marker)"
+                )
                 summary = (
                     "### Completed\n"
+                    f"- Run: `{result.run_dir}`\n"
                     f"- Video: `{result.video_path}`\n"
                     f"- Audio: `{result.audio_path}`\n"
-                    f"- Captions: `{caption}`\n"
+                    f"- Transcript: `{result.whisper_json_path}`\n"
+                    f"- Captions: `{caption}`"
+                    f"{short_summary}\n"
                     f"- Elapsed: `{result.elapsed_seconds:.1f}s`"
                 )
                 return str(result.video_path), str(result.audio_path), summary

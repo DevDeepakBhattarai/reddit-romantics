@@ -40,6 +40,25 @@ def detect_speakers(text: str) -> list[SpeakerInfo]:
     return [SpeakerInfo(speaker_id, descriptions.get(speaker_id, "")) for speaker_id in sorted(found)]
 
 
+
+def infer_speaker_gender(speaker: SpeakerInfo) -> str | None:
+    """Read deterministic gender metadata chosen by the story-generation AI."""
+    description = speaker.description.strip().lower()
+    if not description:
+        return None
+
+    explicit = re.search(r"\bgender\s*[:=]\s*(male|female)\b", description)
+    if explicit:
+        return explicit.group(1)
+
+    # Backward-compatible support for older descriptive metadata. Prefer the
+    # explicit `gender=...` form in newly generated production stories.
+    if re.search(r"\b(female|woman|girl)\b", description):
+        return "female"
+    if re.search(r"\b(male|man|boy)\b", description):
+        return "male"
+    return None
+
 def strip_speaker_metadata(text: str) -> str:
     """Remove voice-casting metadata while preserving actual `Speaker N:` transcript turns."""
     lines: list[str] = []

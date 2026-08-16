@@ -4,6 +4,7 @@ import pytest
 
 from reddit_video.tts_text import (
     detect_speakers,
+    infer_speaker_gender,
     normalize_decorators,
     prepare_text_for_provider,
     validate_speaker_count,
@@ -58,3 +59,22 @@ def test_gemini_rejects_three_speaker_story_but_vibevoice_accepts_it():
     with pytest.raises(ValueError, match="at most 2"):
         validate_speaker_count(STORY, "gemini")
     assert len(validate_speaker_count(STORY, "vibevoice")) == 3
+
+
+def test_infer_speaker_gender_prefers_explicit_production_metadata():
+    speakers = detect_speakers(
+        "Speaker 0 - gender=female; narrator; Maya\n"
+        "Speaker 1 - gender=male; main counterpart; Adrian\n"
+        "Speaker 0: Hello.\nSpeaker 1: Hi."
+    )
+    assert infer_speaker_gender(speakers[0]) == "female"
+    assert infer_speaker_gender(speakers[1]) == "male"
+
+
+def test_infer_speaker_gender_supports_older_descriptions():
+    speakers = detect_speakers(
+        "Speaker 0 - woman narrator\nSpeaker 1 - man counterpart\n"
+        "Speaker 0: Hello.\nSpeaker 1: Hi."
+    )
+    assert infer_speaker_gender(speakers[0]) == "female"
+    assert infer_speaker_gender(speakers[1]) == "male"

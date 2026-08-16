@@ -8,15 +8,17 @@ import shutil
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .captions import CAPTION_THEMES, convert_whisperx_json_to_ass
+from .captions import CAPTION_THEMES, convert_whisperx_json_to_ass, trim_whisperx_json
 from .tts import generate_gemini, generate_vibevoice
-from .fish import generate_fish_s2
-from .tts_text import prepare_text_for_provider, validate_speaker_count
+from .fish import generate_fish_s2, resolve_fish_reference_preset
+from .tts_text import infer_speaker_gender, prepare_text_for_provider, validate_speaker_count
+from .runs import StoryRun, create_story_run, list_story_runs, resolve_story_run, slugify, title_from_story
+from .shorts import resolve_cliffhanger_time, split_story_at_cliffhanger
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env")
@@ -27,11 +29,12 @@ ProgressFn = Callable[[float, str], None]
 
 @dataclass
 class PipelineOptions:
+    run_dir: str | Path | None = None
     story_file: str | Path | None = None
     story_text: str = ""
     output_name: str = ""
 
-    tts_engine: str = "gemini"
+    tts_engine: str = "fish"
     gemini_voice: str = "Kore"
     gemini_model: str = "gemini-3.1-flash-tts-preview"
     gemini_preprocess: bool = True
@@ -55,7 +58,7 @@ class PipelineOptions:
     fish_speaker_references: dict[int, tuple[str | Path, str]] = field(default_factory=dict)
 
     background: str | Path = "videos/minecraft/minecraft.mp4"
-    output_format: str = "shorts"
+    output_format: str = "source"
     randomize_background_start: bool = True
     end_padding_seconds: float = 1.0
 
@@ -77,24 +80,20 @@ class PipelineOptions:
 
 @dataclass(frozen=True)
 class PipelineResult:
+    run_dir: Path
     video_path: Path
     audio_path: Path
     caption_path: Path | None
     whisper_json_path: Path | None
     elapsed_seconds: float
+    short_video_path: Path | None = None
+    short_end_seconds: float | None = None
 
-
-
-def slugify(value: str, fallback: str = "story") -> str:
-    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
-    value = value.strip("._-")
-    return value[:100] or fallback
 
 
 def list_input_stories(root: Path = PROJECT_ROOT) -> list[str]:
-    folder = root / "input"
-    folder.mkdir(parents=True, exist_ok=True)
-    return [str(path.relative_to(root)).replace("\\", "/") for path in sorted(folder.glob("*.txt"))]
+    return [f"{run}/story.md" for run in list_story_runs(root)]
+
 
 
 def list_background_videos(root: Path = PROJECT_ROOT) -> list[str]:
@@ -118,25 +117,37 @@ class RedditVideoPipeline:
         path = Path(value)
         return path if path.is_absolute() else (self.root / path)
 
-    def _prepare_story(self, options: PipelineOptions) -> tuple[Path, str, str]:
+    def _prepare_story(self, options: PipelineOptions) -> tuple[StoryRun, Path, str, str]:
         text = options.story_text.strip()
-        if text:
-            base = slugify(options.output_name or f"story_{time.strftime('%Y%m%d_%H%M%S')}")
-            story_path = self.root / "input" / f"{base}.txt"
-            story_path.parent.mkdir(parents=True, exist_ok=True)
-            story_path.write_text(text, encoding="utf-8")
-            return story_path, text, base
+        source_path: Path | None = None
+        if options.story_file:
+            source_path = self._resolve_path(options.story_file)
+            if not source_path.exists():
+                raise FileNotFoundError(f"Story file not found: {source_path}")
+            if not text:
+                text = source_path.read_text(encoding="utf-8-sig").strip()
 
-        if not options.story_file:
-            raise ValueError("Provide story text or choose a .txt story file.")
-        story_path = self._resolve_path(options.story_file)
-        if not story_path.exists():
-            raise FileNotFoundError(f"Story file not found: {story_path}")
-        text = story_path.read_text(encoding="utf-8-sig").strip()
+        if options.run_dir:
+            run_path = self._resolve_path(options.run_dir)
+            run_path.mkdir(parents=True, exist_ok=True)
+            run = StoryRun(run_path)
+        elif source_path is not None and source_path.name.lower() in {"story.md", "story.txt"}:
+            runs_root = (self.root / "runs").resolve()
+            try:
+                source_path.parent.resolve().relative_to(runs_root)
+                run = StoryRun(source_path.parent.resolve())
+            except ValueError:
+                run = create_story_run(self.root, options.output_name or source_path.stem)
+        else:
+            run = create_story_run(self.root, options.output_name or title_from_story(text))
+
+        if not text and run.story.exists():
+            text = run.story.read_text(encoding="utf-8-sig").strip()
         if not text:
-            raise ValueError(f"Story file is empty: {story_path}")
-        base = slugify(options.output_name or story_path.stem)
-        return story_path, text, base
+            raise ValueError("Story is empty. Put the reviewed story in story.md before generating video.")
+
+        run.story.write_text(text, encoding="utf-8")
+        return run, run.story, text, run.path.name
 
     def _probe_duration(self, path: Path) -> float:
         result = subprocess.run(
@@ -154,6 +165,20 @@ class RedditVideoPipeline:
             return float(sf.info(str(path)).duration)
         except (OSError, RuntimeError):
             return self._probe_duration(path)
+
+    def _resolve_default_fish_voice(self, gender: str) -> tuple[str, tuple[Path, str]]:
+        candidates = ("Ethan",) if gender == "male" else ("Sarah",)
+        errors: list[str] = []
+        for preset in candidates:
+            try:
+                return preset, resolve_fish_reference_preset(self.root, preset)
+            except (FileNotFoundError, ValueError) as exc:
+                errors.append(str(exc))
+        preferred = candidates[0]
+        raise FileNotFoundError(
+            f"Default Fish {gender} preset '{preferred}' is unavailable. "
+            + " | ".join(errors)
+        )
 
     def _generate_narration(
         self,
@@ -252,6 +277,24 @@ class RedditVideoPipeline:
         }
         if not explicit_speakers and not selected_refs and options.fish_reference_audio:
             selected_refs[0] = (options.fish_reference_audio, options.fish_reference_text)
+
+        auto_cast: list[str] = []
+        for speaker in speakers:
+            mapped_id = id_map[speaker.speaker_id]
+            if mapped_id in selected_refs:
+                continue
+            gender = infer_speaker_gender(speaker)
+            if gender is None:
+                raise ValueError(
+                    f"Speaker {speaker.speaker_id} has no gender metadata for automatic Fish casting. "
+                    "Production stories must include a non-spoken line such as "
+                    f"'Speaker {speaker.speaker_id} - gender=male; narrator' or "
+                    f"'Speaker {speaker.speaker_id} - gender=female; main counterpart'."
+                )
+            preset, reference = self._resolve_default_fish_voice(gender)
+            selected_refs[mapped_id] = reference
+            auto_cast.append(f"Speaker {speaker.speaker_id}={gender}->{preset}")
+
         missing = [
             speaker_id
             for speaker_id in original_ids
@@ -259,11 +302,12 @@ class RedditVideoPipeline:
         ]
         if missing:
             raise ValueError(
-                "Fish Audio requires an explicit saved preset or uploaded reference voice for every speaker; "
-                "random model-selected voices are disabled. Missing: "
+                "Fish Audio could not resolve a voice for: "
                 + ", ".join(f"Speaker {speaker_id}" for speaker_id in missing)
             )
-        self._stage(0.10, f"Fish Audio: starting S2 Pro for {len(speakers) or 1} speaker(s)")
+        if auto_cast:
+            self.log("Fish automatic casting: " + "; ".join(auto_cast))
+        self._stage(0.10, f"Fish Audio S2 Pro: starting {len(speakers) or 1} speaker(s)")
         return generate_fish_s2(
             self.root,
             prepared_text,
@@ -389,11 +433,12 @@ class RedditVideoPipeline:
         if code != 0:
             raise RuntimeError(f"Command failed with exit code {code}: {display}")
 
-    def _generate_captions(
+    def _transcribe_and_style(
         self,
         audio_path: Path,
         work_dir: Path,
-        caption_path: Path,
+        transcript_path: Path,
+        caption_path: Path | None,
         options: PipelineOptions,
         resolution: tuple[int, int],
     ) -> Path:
@@ -429,19 +474,20 @@ class RedditVideoPipeline:
             else:
                 raise RuntimeError(f"WhisperX finished but no JSON output was found in {whisper_dir}")
 
-        width, height = resolution
-        convert_whisperx_json_to_ass(
-            whisper_json,
-            caption_path,
-            theme_name=options.caption_theme,
-            max_words=(options.caption_max_words or None),
-            pause_threshold=options.caption_pause_threshold,
-            width=width,
-            height=height,
-        )
-        final_json = self.root / "output" / "captions" / f"{caption_path.stem}.json"
-        shutil.copyfile(whisper_json, final_json)
-        return final_json
+        transcript_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(whisper_json, transcript_path)
+        if caption_path is not None:
+            width, height = resolution
+            convert_whisperx_json_to_ass(
+                transcript_path,
+                caption_path,
+                theme_name=options.caption_theme,
+                max_words=(options.caption_max_words or None),
+                pause_threshold=options.caption_pause_threshold,
+                width=width,
+                height=height,
+            )
+        return transcript_path
 
     def _resolve_encoder(self, requested: str) -> str:
         if requested == "cpu":
@@ -504,6 +550,57 @@ class RedditVideoPipeline:
         ])
         self._run_streamed(command, self.root)
 
+    def _resolve_background(self, value: str | Path) -> Path:
+        background_value = str(value)
+        if background_value.lower() in {"asmr", "minecraft"}:
+            matches = sorted((self.root / "videos" / background_value.lower()).glob("*.mp4"))
+            if not matches:
+                raise FileNotFoundError(f"No background videos found for category: {background_value}")
+            return matches[0]
+        background = self._resolve_path(value)
+        if not background.exists():
+            raise FileNotFoundError(f"Background video not found: {background}")
+        return background
+
+    def _extract_audio(self, source: Path, output: Path, end_time: float) -> Path:
+        command = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(source), "-t", f"{end_time:.3f}",
+            "-c:a", "pcm_s16le", str(output),
+        ]
+        self._run_streamed(command, self.root)
+        return output
+
+    def _render_short_from_cutoff(
+        self,
+        run: StoryRun,
+        end_time: float,
+        options: PipelineOptions,
+        background: Path,
+    ) -> None:
+        short_options = replace(
+            options,
+            output_format="shorts",
+            end_padding_seconds=min(float(options.end_padding_seconds), 0.25),
+        )
+        self._extract_audio(run.narration, run.short_audio, end_time)
+        trim_whisperx_json(run.transcript, run.short_transcript, end_time)
+
+        caption_path: Path | None = None
+        if short_options.captions:
+            caption_path = run.short_captions
+            convert_whisperx_json_to_ass(
+                run.short_transcript,
+                caption_path,
+                theme_name=short_options.caption_theme,
+                max_words=(short_options.caption_max_words or None),
+                pause_threshold=short_options.caption_pause_threshold,
+                width=1080,
+                height=1920,
+            )
+
+        self._render(background, run.short_audio, caption_path, run.short_video, short_options, end_time)
+
     def run(self, options: PipelineOptions) -> PipelineResult:
         started = time.perf_counter()
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
@@ -511,46 +608,102 @@ class RedditVideoPipeline:
         if options.caption_theme not in CAPTION_THEMES:
             raise ValueError(f"Unknown caption theme: {options.caption_theme}")
 
-        story_path, story_text, base = self._prepare_story(options)
-        background_value = str(options.background)
-        if background_value.lower() in {"asmr", "minecraft"}:
-            matches = sorted((self.root / "videos" / background_value.lower()).glob("*.mp4"))
-            if not matches:
-                raise FileNotFoundError(f"No background videos found for category: {background_value}")
-            background = matches[0]
-        else:
-            background = self._resolve_path(options.background)
-        if not background.exists():
-            raise FileNotFoundError(f"Background video not found: {background}")
-
+        run, story_path, story_text, base = self._prepare_story(options)
+        spoken_story_text, short_prefix = split_story_at_cliffhanger(story_text)
+        background = self._resolve_background(options.background)
         work_dir = self.root / ".work" / base
         work_dir.mkdir(parents=True, exist_ok=True)
-        audio_path = work_dir / f"{base}.wav"
-        output_path = self.root / "output" / f"{base}_final.mp4"
-        caption_path = self.root / "output" / "captions" / f"{base}_{options.caption_theme}.ass" if options.captions else None
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        (self.root / "output" / "captions").mkdir(parents=True, exist_ok=True)
+        caption_path = run.captions if options.captions else None
 
-        self._stage(0.05, f"Story loaded: {story_path.name}")
-        self._generate_narration(options, story_path, story_text, audio_path)
+        self._stage(0.05, f"Story loaded: {story_path}")
+        self._generate_narration(options, story_path, spoken_story_text, run.narration)
 
-        audio_duration = self._audio_duration(audio_path)
-        self._validate_narration_duration(story_text, audio_duration)
+        audio_duration = self._audio_duration(run.narration)
+        self._validate_narration_duration(spoken_story_text, audio_duration)
         self.log(f"Narration duration: {audio_duration:.2f}s")
 
-        whisper_json: Path | None = None
-        if options.output_format == "shorts":
-            resolution = (1080, 1920)
+        resolution = (1080, 1920) if options.output_format == "shorts" else self._probe_dimensions(background)
+        self._stage(0.58, "Transcribing narration for captions and automatic Short alignment")
+        transcript = self._transcribe_and_style(
+            run.narration,
+            work_dir,
+            run.transcript,
+            caption_path,
+            options,
+            resolution,
+        )
+
+        self._stage(0.78, f"Rendering full {options.output_format} video")
+        self._render(background, run.narration, caption_path, run.full_video, options, audio_duration)
+
+        short_video: Path | None = None
+        short_end: float | None = None
+        if short_prefix is not None:
+            short_end = resolve_cliffhanger_time(story_text, run.transcript)
+            assert short_end is not None
+            self._stage(0.90, f"Rendering automatic cliffhanger Short through {short_end:.2f}s")
+            self._render_short_from_cutoff(run, short_end, options, background)
+            short_video = run.short_video
         else:
-            resolution = self._probe_dimensions(background)
-
-        if caption_path is not None:
-            self._stage(0.58, f"Transcribing and styling captions: {CAPTION_THEMES[options.caption_theme].label}")
-            whisper_json = self._generate_captions(audio_path, work_dir, caption_path, options, resolution)
-
-        self._stage(0.82, f"Rendering final {options.output_format} video")
-        self._render(background, audio_path, caption_path, output_path, options, audio_duration)
+            self.log("No Shorts cliffhanger marker found; full video completed and Short was skipped.")
 
         elapsed = time.perf_counter() - started
-        self._stage(1.0, f"Finished: {output_path}")
-        return PipelineResult(output_path, audio_path, caption_path, whisper_json, elapsed)
+        self._stage(1.0, f"Finished: {run.full_video}")
+        return PipelineResult(
+            run.path,
+            run.full_video,
+            run.narration,
+            caption_path,
+            transcript,
+            elapsed,
+            short_video,
+            short_end,
+        )
+
+    def render_short(
+        self,
+        run_dir: str | Path,
+        options: PipelineOptions | None = None,
+    ) -> PipelineResult:
+        """Programmatically rebuild a Short from a run's story marker and existing transcript."""
+        started = time.perf_counter()
+        if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+            raise RuntimeError("ffmpeg and ffprobe must be available on PATH.")
+
+        options = options or PipelineOptions()
+        if options.caption_theme not in CAPTION_THEMES:
+            raise ValueError(f"Unknown caption theme: {options.caption_theme}")
+        run = resolve_story_run(self.root, run_dir)
+        if not run.story.exists():
+            raise FileNotFoundError(f"Story is missing: {run.story}")
+        if not run.narration.exists():
+            raise FileNotFoundError(f"Full narration is missing: {run.narration}")
+        if not run.transcript.exists():
+            raise FileNotFoundError(f"Transcript is missing: {run.transcript}")
+
+        story_text = run.story.read_text(encoding="utf-8-sig")
+        end_time = resolve_cliffhanger_time(story_text, run.transcript)
+        if end_time is None:
+            raise ValueError("Story has no Shorts cliffhanger marker, so there is no programmatic cutoff to render.")
+
+        narration_duration = self._audio_duration(run.narration)
+        if end_time > narration_duration:
+            raise ValueError(
+                f"Short end time {end_time:.2f}s exceeds narration duration {narration_duration:.2f}s."
+            )
+
+        background = self._resolve_background(options.background)
+        self._stage(0.15, f"Reusing narration/transcript; marker resolves to {end_time:.2f}s")
+        self._render_short_from_cutoff(run, end_time, options, background)
+        elapsed = time.perf_counter() - started
+        self._stage(1.0, f"Finished: {run.short_video}")
+        return PipelineResult(
+            run.path,
+            run.short_video,
+            run.short_audio,
+            run.short_captions if options.captions else None,
+            run.short_transcript,
+            elapsed,
+            run.short_video,
+            end_time,
+        )

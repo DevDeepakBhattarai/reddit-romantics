@@ -8,6 +8,7 @@ from reddit_video.captions import (
     CAPTION_THEMES,
     convert_whisperx_json_to_ass,
     format_time,
+    trim_whisperx_json,
 )
 
 
@@ -65,3 +66,34 @@ def test_pause_creates_a_new_word_group(tmp_path, whisperx_json):
 def test_long_caption_timestamp_rolls_over_cleanly():
     assert format_time(3599.999) == "1:00:00.00"
     assert format_time(5400.0) == "1:30:00.00"
+
+
+
+def test_trim_whisperx_json_keeps_only_words_before_cliffhanger(tmp_path):
+    source = tmp_path / "transcript.json"
+    target = tmp_path / "short-transcript.json"
+    source.write_text(
+        json.dumps({
+            "word_segments": [
+                {"word": "one", "start": 1.0, "end": 1.3},
+                {"word": "two", "start": 59.0, "end": 60.5},
+                {"word": "three", "start": 61.0, "end": 61.2},
+            ],
+            "segments": [
+                {"start": 0.0, "end": 62.0, "text": "one two three", "words": [
+                    {"word": "one", "start": 1.0, "end": 1.3},
+                    {"word": "two", "start": 59.0, "end": 60.5},
+                    {"word": "three", "start": 61.0, "end": 61.2},
+                ]}
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    trim_whisperx_json(source, target, 60.0)
+    data = json.loads(target.read_text(encoding="utf-8"))
+
+    assert [word["word"] for word in data["word_segments"]] == ["one", "two"]
+    assert data["word_segments"][-1]["end"] == 60.0
+    assert [word["word"] for word in data["segments"][0]["words"]] == ["one", "two"]
+    assert data["segments"][0]["end"] == 60.0
