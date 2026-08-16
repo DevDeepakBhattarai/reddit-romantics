@@ -181,14 +181,36 @@ def run_pipeline(args: argparse.Namespace) -> int:
     return 0
 
 
+class _TeeTextIO:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self.streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def __getattr__(self, name: str):
+        return getattr(self.streams[0], name)
+
+
 def _run_queued_job(job: dict, log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8", buffering=1) as log, redirect_stdout(log), redirect_stderr(log):
-        print(f"Queue job: {job['id']}")
-        print(f"Run: {job['run_dir']}")
-        print(f"Arguments: {' '.join(job['run_args'])}")
-        queued_args = build_parser().parse_args(["run", *job["run_args"]])
-        return run_pipeline(queued_args)
+    console_out = sys.stdout
+    console_err = sys.stderr
+    with log_path.open("a", encoding="utf-8", buffering=1) as log:
+        stdout = _TeeTextIO(console_out, log)
+        stderr = _TeeTextIO(console_err, log)
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            print(f"Queue job: {job['id']}")
+            print(f"Run: {job['run_dir']}")
+            print(f"Arguments: {' '.join(job['run_args'])}")
+            queued_args = build_parser().parse_args(["run", *job["run_args"]])
+            return run_pipeline(queued_args)
 
 
 def _print_queue_status(queue: VideoJobQueue) -> None:
