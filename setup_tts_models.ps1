@@ -1,5 +1,5 @@
-param(
-    [ValidateSet("fish", "step", "magpie", "chatterbox", "higgs", "all")]
+﻿param(
+    [ValidateSet("fish", "step", "magpie", "chatterbox", "all")]
     [string]$Backend = "all",
     [ValidateSet("cpu", "cu118", "cu121", "cu124", "cu126", "cu128")]
     [string]$TorchBackend = "cu128"
@@ -241,39 +241,10 @@ function Install-Chatterbox {
     Download-Hf "ResembleAI/chatterbox"
 }
 
-function Install-Higgs {
-    Require-Command "docker"
-    Write-Host "==> Pulling the official SGLang-Omni CUDA image"
-    docker pull lmsysorg/sglang-omni:dev
-    if ($LASTEXITCODE -ne 0) { throw "Could not pull lmsysorg/sglang-omni:dev" }
-
-    Write-Host "==> Building the one-time Reddit Romantics Higgs runtime image"
-    $imageName = "reddit-romantics-sglang-omni:local"
-    docker image inspect $imageName *> $null
-    if ($LASTEXITCODE -ne 0) {
-        $context = Join-Path $PSScriptRoot ".work\higgs-docker-context"
-        New-Item -ItemType Directory -Force -Path $context | Out-Null
-        $dockerfile = @'
-FROM lmsysorg/sglang-omni:dev
-RUN git clone --depth 1 --filter=blob:none https://github.com/sgl-project/sglang-omni.git /opt/sglang-omni \
-    && cd /opt/sglang-omni \
-    && uv pip install -v .
-ENTRYPOINT ["sgl-omni"]
-'@
-        [System.IO.File]::WriteAllText((Join-Path $context "Dockerfile"), $dockerfile, [System.Text.UTF8Encoding]::new($false))
-        docker build -t $imageName $context
-        if ($LASTEXITCODE -ne 0) { throw "Could not build $imageName" }
-    }
-
-    Write-Host "==> Downloading Higgs Audio v3 TTS weights into the shared cache"
-    Download-Hf "bosonai/higgs-audio-v3-tts-4b"
-}
-
-
 Require-Command "uv"
 
 $targets = if ($Backend -eq "all") {
-    @("fish", "step", "magpie", "chatterbox", "higgs")
+    @("fish", "step", "magpie", "chatterbox")
 } else {
     @($Backend)
 }
@@ -288,7 +259,6 @@ foreach ($target in $targets) {
             "step" { Install-Step }
             "magpie" { Install-Magpie }
             "chatterbox" { Install-Chatterbox }
-            "higgs" { Install-Higgs }
         }
         Write-Host "==> $target runtime ready" -ForegroundColor Green
     } catch {

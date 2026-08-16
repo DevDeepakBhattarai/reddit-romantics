@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import wave
 from pathlib import Path
@@ -153,6 +153,71 @@ def test_fish_hybrid_uses_unquantized_f16_partial_cuda_offload(tmp_path, monkeyp
     assert any("unquantized F16" in line for line in logs)
 
 
+def test_fish_long_form_repeats_active_speaker_for_every_segment():
+    text = (
+        "<|speaker:0|>First sentence. Second sentence!\n"
+        "<|speaker:1|>Third sentence? Fourth sentence."
+    )
+
+    segmented = tts_models._fish_retag_segmented_text(text)
+
+    assert segmented.splitlines() == [
+        "<|speaker:0|>First sentence.",
+        "<|speaker:0|>Second sentence!",
+        "<|speaker:1|>Third sentence?",
+        "<|speaker:1|>Fourth sentence.",
+    ]
+
+
+def test_fish_hybrid_long_form_uses_segmented_server_once(tmp_path, monkeypatch):
+    s2_root = tmp_path / "vendor" / "s2.cpp"
+    binary = s2_root / "build-cuda" / "bin" / "Release" / "s2.exe"
+    tokenizer = s2_root / "tokenizer.json"
+    model = tmp_path / ".work" / "fish-native" / "s2-pro-f16.gguf"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"s2")
+    tokenizer.write_text("{}", encoding="utf-8")
+    model.parent.mkdir(parents=True)
+    model.write_bytes(b"full-f16-model")
+    output = tmp_path / "fish-long.wav"
+    reference = tmp_path / "voice.wav"
+    _write_silent_wav(reference)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("TTS_FISH_LONG_FORM_CHARS", "100")
+    monkeypatch.setattr(
+        tts_models,
+        "_run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("long form must not use one-shot CLI")),
+    )
+
+    def fake_segmented_server(**kwargs):
+        captured.update(kwargs)
+        _write_silent_wav(output)
+        return output
+
+    monkeypatch.setattr(tts_models, "_run_fish_s2_segmented_server", fake_segmented_server)
+
+    result = tts_models.generate_fish_s2(
+        tmp_path,
+        "<|speaker:0|>" + ("This is a long Fish narration sentence. " * 8),
+        output,
+        device="hybrid",
+        gpu_layers=20,
+        temperature=0.9,
+        reference_audio=reference,
+        reference_text="Reference transcript.",
+        log=lambda _message: None,
+    )
+
+    assert result == output
+    assert captured["binary"] == binary
+    assert captured["model"] == model
+    assert captured["gpu_layers"] == 20
+    assert captured["reference_audio"] == reference
+    assert captured["reference_text"] == "Reference transcript."
+
+
 def test_step_prefers_awq_and_memory_saving_flags(tmp_path, monkeypatch):
     root = tmp_path / "vendor" / "Step-Audio-EditX"
     (root / "models" / "Step-Audio-EditX-AWQ-4bit").mkdir(parents=True)
@@ -194,7 +259,7 @@ def test_step_prefers_awq_and_memory_saving_flags(tmp_path, monkeypatch):
 def test_runtime_status_does_not_import_or_download_models(tmp_path):
     statuses = tts_models.backend_runtime_status(tmp_path)
 
-    assert set(statuses) == {"fish", "step", "magpie", "chatterbox", "higgs"}
+    assert set(statuses) == {"fish", "step", "magpie", "chatterbox"}
     assert all(
         "not installed" in value.lower() or "incomplete" in value.lower()
         for value in statuses.values()

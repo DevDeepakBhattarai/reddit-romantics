@@ -1,14 +1,16 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import threading
 import time
-import urllib.error
-import urllib.request
+import uuid
 from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
@@ -177,6 +179,236 @@ def _validate_output(path: Path, engine: str) -> Path:
     if not path.exists() or path.stat().st_size <= 44:
         raise RuntimeError(f"{engine} finished without creating valid WAV audio: {path}")
     return path
+
+
+_FISH_SPEAKER_TAG_RE = re.compile(r"<\|speaker:(\d+)\|>")
+
+
+def _fish_sentence_units(text: str) -> list[str]:
+    """Split text the same way s2.cpp's segmented server does, without losing punctuation."""
+    segments: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        current.append(char)
+        if char not in ".!?\n":
+            index += 1
+            continue
+
+        if char in ".!?":
+            while index + 1 < len(text) and text[index + 1] in ".!?\"') ]":
+                next_char = text[index + 1]
+                if next_char == " ":
+                    break
+                current.append(next_char)
+                index += 1
+
+        segment = "".join(current).strip()
+        if segment:
+            segments.append(segment)
+        current = []
+        index += 1
+
+    tail = "".join(current).strip()
+    if tail:
+        segments.append(tail)
+    return segments
+
+
+def _fish_retag_segmented_text(text: str) -> str:
+    """Repeat the active speaker tag for every sentence/line segment.
+
+    s2.cpp's long-form server synthesizes each sentence independently. Repeating
+    the tag is essential for multi-speaker stories because a later sentence in
+    the same turn would otherwise lose its speaker identity after segmentation.
+    """
+    parts = re.split(r"(<\|speaker:\d+\|>)", text.strip())
+    active_speaker = 0
+    tagged_segments: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        match = _FISH_SPEAKER_TAG_RE.fullmatch(part.strip())
+        if match:
+            active_speaker = int(match.group(1))
+            continue
+        for segment in _fish_sentence_units(part):
+            tagged_segments.append(f"<|speaker:{active_speaker}|>{segment}")
+    return "\n".join(tagged_segments)
+
+
+def _fish_long_form_threshold() -> int:
+    return max(100, int(os.getenv("TTS_FISH_LONG_FORM_CHARS", "420")))
+
+
+def _fish_needs_long_form(text: str) -> bool:
+    spoken_text = _FISH_SPEAKER_TAG_RE.sub("", text).strip()
+    return len(spoken_text) > _fish_long_form_threshold()
+
+
+def _reserve_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _multipart_body(
+    fields: dict[str, str],
+    reference_audio: Path | None,
+) -> tuple[bytes, str]:
+    boundary = f"----RedditRomanticsFish{uuid.uuid4().hex}"
+    body = bytearray()
+
+    def add_line(value: str = "") -> None:
+        body.extend(value.encode("utf-8"))
+        body.extend(b"\r\n")
+
+    for name, value in fields.items():
+        add_line(f"--{boundary}")
+        add_line(f'Content-Disposition: form-data; name="{name}"')
+        add_line()
+        add_line(value)
+
+    if reference_audio is not None:
+        safe_name = reference_audio.name.replace('"', "_")
+        add_line(f"--{boundary}")
+        add_line(f'Content-Disposition: form-data; name="reference"; filename="{safe_name}"')
+        add_line("Content-Type: application/octet-stream")
+        add_line()
+        body.extend(reference_audio.read_bytes())
+        body.extend(b"\r\n")
+
+    add_line(f"--{boundary}--")
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+def _run_fish_s2_segmented_server(
+    *,
+    binary: Path,
+    model: Path,
+    tokenizer: Path,
+    text: str,
+    output_path: Path,
+    cuda_device: int,
+    gpu_layers: int,
+    cpu_threads: int,
+    temperature: float,
+    reference_audio: Path | None,
+    reference_text: str,
+    log: LogFn,
+) -> Path:
+    """Generate long Fish audio with one model load and sentence-aware segmentation."""
+    port = _reserve_local_port()
+    max_tokens = max(128, min(4096, int(os.getenv("TTS_FISH_SEGMENT_MAX_TOKENS", "1024"))))
+    max_chars = max(120, int(os.getenv("TTS_FISH_SEGMENT_MAX_CHARS", "420")))
+    pause_ms = max(0, int(os.getenv("TTS_FISH_SENTENCE_PAUSE_MS", "180")))
+    startup_timeout = max(30.0, float(os.getenv("TTS_FISH_SERVER_START_TIMEOUT", "900")))
+
+    command = [
+        str(binary),
+        "--model", str(model),
+        "--tokenizer", str(tokenizer),
+        "--cuda", str(cuda_device),
+        "--gpu-layers", str(gpu_layers),
+        "--codec-follow-backend",
+        "--threads", str(cpu_threads),
+        "--temperature", str(float(temperature)),
+        "--max-tokens", str(max_tokens),
+        "--server",
+        "--host", "127.0.0.1",
+        "--port", str(port),
+    ]
+    log(
+        "Fish long-form: loading S2 Pro once, then synthesizing sentence-aware segments "
+        f"(<= {max_chars} chars for unusually long sentences, <= {max_tokens} audio tokens each)."
+    )
+    log("$ " + subprocess.list2cmdline(command))
+    process = subprocess.Popen(
+        command,
+        cwd=str(binary.parent),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+    )
+
+    def pump_logs() -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            stripped = line.rstrip()
+            if stripped:
+                log(stripped)
+
+    log_thread = threading.Thread(target=pump_logs, name="fish-s2-server-log", daemon=True)
+    log_thread.start()
+    try:
+        deadline = time.monotonic() + startup_timeout
+        while True:
+            if process.poll() is not None:
+                raise RuntimeError(f"Fish S2 long-form server exited during startup with code {process.returncode}.")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Fish S2 long-form server did not become ready within {startup_timeout:.0f}s."
+                    )
+                time.sleep(0.25)
+
+        segmented_text = _fish_retag_segmented_text(text)
+        segment_count = len([line for line in segmented_text.splitlines() if line.strip()])
+        log(f"Fish long-form: {segment_count} sentence/line segments; voice reference is encoded once and reused.")
+        params = json.dumps(
+            {
+                "max_new_tokens": max_tokens,
+                "temperature": float(temperature),
+                "n_threads": cpu_threads,
+                "codec_follow_backend": True,
+                "segment_sentences": True,
+                "segment_max_chars": max_chars,
+                "sentence_pause_ms": pause_ms,
+                "output_format": "wav",
+            },
+            separators=(",", ":"),
+        )
+        fields = {"text": segmented_text, "params": params}
+        if reference_audio is not None:
+            fields["reference_text"] = reference_text
+        body, content_type = _multipart_body(fields, reference_audio)
+
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=None)
+        try:
+            connection.request(
+                "POST",
+                "/generate",
+                body=body,
+                headers={"Content-Type": content_type, "Content-Length": str(len(body))},
+            )
+            response = connection.getresponse()
+            audio = response.read()
+            if response.status != 200:
+                detail = audio.decode("utf-8", errors="replace")
+                raise RuntimeError(f"Fish S2 long-form request failed with HTTP {response.status}: {detail}")
+        finally:
+            connection.close()
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(audio)
+        return _validate_output(output_path, "Fish Audio S2 Pro (hybrid CUDA long-form)")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+        log_thread.join(timeout=2)
 
 
 
@@ -429,6 +661,34 @@ def _generate_fish_s2_hybrid(
         "Fish hybrid: Fast-AR, KV cache, and codec use CUDA; the codec can fall back to CPU if GPU allocation fails; "
         f"CPU worker threads={cpu_threads}."
     )
+
+    refs = _validated_fish_speaker_references(speaker_references)
+    prompt_audio: Path | None = None
+    prompt_text = ""
+    if refs:
+        prompt_audio = _merge_fish_reference_audio(
+            [ref for _, ref, _ in refs],
+            output_path.parent / f".{output_path.stem}_fish" / "multi_speaker_reference.wav",
+            log,
+        )
+        prompt_text = "\n".join(
+            f"<|speaker:{speaker_id}|>{transcript}" for speaker_id, _, transcript in refs
+        )
+    elif reference_audio:
+        prompt_audio = Path(reference_audio)
+        if not prompt_audio.exists():
+            raise FileNotFoundError(f"Fish reference audio not found: {prompt_audio}")
+        if not reference_text.strip():
+            raise ValueError("Fish voice cloning requires the transcript of the reference audio.")
+        prompt_text = reference_text.strip()
+
+    if _fish_needs_long_form(text):
+        return _run_fish_s2_segmented_server(
+            binary=binary, model=model, tokenizer=tokenizer, text=text, output_path=output_path,
+            cuda_device=cuda_device, gpu_layers=layers, cpu_threads=cpu_threads,
+            temperature=temperature, reference_audio=prompt_audio, reference_text=prompt_text, log=log,
+        )
+
     command = [
         str(binary),
         "--model", str(model),
@@ -442,24 +702,8 @@ def _generate_fish_s2_hybrid(
         "--temperature", str(float(temperature)),
         "--max-tokens", os.getenv("TTS_FISH_MAX_TOKENS", "4096"),
     ]
-    refs = _validated_fish_speaker_references(speaker_references)
-    if refs:
-        merged_audio = _merge_fish_reference_audio(
-            [ref for _, ref, _ in refs],
-            output_path.parent / f".{output_path.stem}_fish" / "multi_speaker_reference.wav",
-            log,
-        )
-        tagged_text = "\n".join(
-            f"<|speaker:{speaker_id}|>{transcript}" for speaker_id, _, transcript in refs
-        )
-        command.extend(["--prompt-audio", str(merged_audio), "--prompt-text", tagged_text])
-    elif reference_audio:
-        ref = Path(reference_audio)
-        if not ref.exists():
-            raise FileNotFoundError(f"Fish reference audio not found: {ref}")
-        if not reference_text.strip():
-            raise ValueError("Fish voice cloning requires the transcript of the reference audio.")
-        command.extend(["--prompt-audio", str(ref), "--prompt-text", reference_text.strip()])
+    if prompt_audio is not None:
+        command.extend(["--prompt-audio", str(prompt_audio), "--prompt-text", prompt_text])
 
     _run(command, binary.parent, log)
     return _validate_output(output_path, "Fish Audio S2 Pro (hybrid CUDA)")
@@ -746,179 +990,6 @@ def generate_chatterbox(
     return _validate_output(output_path, "Chatterbox")
 
 
-_HIGGS_DOCKER_IMAGE = "reddit-romantics-sglang-omni:local"
-_HIGGS_CONTAINER = "reddit-romantics-higgs-tts"
-_HIGGS_PORT = 18080
-
-
-def _docker_command(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    if shutil.which("docker") is None:
-        raise RuntimeError("Docker Desktop is required for Higgs TTS 3, but docker.exe was not found on PATH.")
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=check,
-    )
-
-
-def _higgs_health() -> bool:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{_HIGGS_PORT}/health", timeout=2) as response:
-            return response.status == 200
-    except (OSError, urllib.error.URLError):
-        return False
-
-
-def _higgs_container_state() -> tuple[bool, bool, str]:
-    result = _docker_command(
-        [
-            "inspect",
-            "--format",
-            '{{.State.Running}}|{{index .Config.Labels "reddit-romantics.higgs-model"}}',
-            _HIGGS_CONTAINER,
-        ],
-        check=False,
-    )
-    if result.returncode != 0:
-        return False, False, ""
-    running, _, model = result.stdout.strip().partition("|")
-    return True, running.lower() == "true", model.strip()
-
-
-def _ensure_higgs_server(project_root: Path, model_id: str, device: str, log: LogFn) -> None:
-    image = _docker_command(["image", "inspect", _HIGGS_DOCKER_IMAGE], check=False)
-    if image.returncode != 0:
-        raise RuntimeError(
-            "The Higgs SGLang-Omni image is not installed. Run .\\setup_tts_models.ps1 -Backend higgs once."
-        )
-
-    exists, running, loaded_model = _higgs_container_state()
-    if exists and loaded_model != model_id:
-        log(f"Recreating Higgs server because the selected model changed to {model_id}.")
-        _docker_command(["rm", "-f", _HIGGS_CONTAINER], check=False)
-        exists = running = False
-
-    if exists and not running:
-        log("Starting the existing Higgs TTS container.")
-        _docker_command(["start", _HIGGS_CONTAINER])
-    elif not exists:
-        cache_dir = (project_root / ".work" / "hf-cache").resolve()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        # Higgs stages are CUDA-oriented, but SGLang can keep a substantial part
-        # of the AR backbone in host RAM. On this 8 GB card, use aggressive
-        # offload and tiny serving/KV budgets; `cpu` means "prefer host RAM",
-        # not a CUDA-free Higgs pipeline (the codec/vocoder still use CUDA).
-        offload_gb = "12" if device == "cpu" else "8"
-        log(
-            f"Launching Higgs TTS via SGLang-Omni (CPU offload={offload_gb} GB, "
-            "single-request low-memory mode)."
-        )
-        command = [
-            "run",
-            "-d",
-            "--name",
-            _HIGGS_CONTAINER,
-            "--label",
-            f"reddit-romantics.higgs-model={model_id}",
-            "--gpus",
-            "all",
-            "--shm-size",
-            "16g",
-            "--ipc",
-            "host",
-            "-p",
-            f"127.0.0.1:{_HIGGS_PORT}:8000",
-            "-v",
-            f"{cache_dir}:/root/.cache/huggingface",
-            _HIGGS_DOCKER_IMAGE,
-            "serve",
-            "--model-path",
-            model_id,
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-            "--cpu-offload-gb",
-            offload_gb,
-            "--talker-mem-fraction-static",
-            "0.55",
-            "--max-running-requests",
-            "1",
-            "--max-total-tokens",
-            "2048",
-            "--talker-cuda-graph",
-            "off",
-            "--decode-mode",
-            "sync",
-            "--log-level",
-            "warning",
-        ]
-        result = _docker_command(command, check=False)
-        if result.returncode != 0:
-            raise RuntimeError(f"Could not launch Higgs TTS container: {result.stderr.strip() or result.stdout.strip()}")
-
-    if _higgs_health():
-        return
-
-    log("Waiting for the Higgs model to finish loading (first launch only).")
-    for attempt in range(300):
-        if _higgs_health():
-            log("Higgs TTS server is ready.")
-            return
-        exists, running, _ = _higgs_container_state()
-        if not exists or not running:
-            logs = _docker_command(["logs", "--tail", "120", _HIGGS_CONTAINER], check=False)
-            detail = (logs.stdout + "\n" + logs.stderr).strip()
-            raise RuntimeError(f"Higgs TTS container stopped while loading.\n{detail}")
-        if attempt and attempt % 15 == 0:
-            log("Higgs is still loading/offloading model weights...")
-        time.sleep(2)
-    logs = _docker_command(["logs", "--tail", "120", _HIGGS_CONTAINER], check=False)
-    detail = (logs.stdout + "\n" + logs.stderr).strip()
-    raise RuntimeError(f"Higgs TTS did not become healthy after startup.\n{detail}")
-
-
-def generate_higgs_tts3(
-    project_root: Path,
-    text: str,
-    output_path: Path,
-    *,
-    model_id: str = "bosonai/higgs-audio-v3-tts-4b",
-    device: str = "auto",
-    log: LogFn,
-) -> Path:
-    _ensure_higgs_server(project_root, model_id, device, log)
-    request = urllib.request.Request(
-        f"http://127.0.0.1:{_HIGGS_PORT}/v1/audio/speech",
-        data=json.dumps(
-            {
-                "model": model_id,
-                "voice": "default",
-                "input": text.strip(),
-                "response_format": "wav",
-                "stream": False,
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    log("Generating Higgs TTS audio through the local SGLang-Omni server.")
-    try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            audio = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Higgs TTS request failed with HTTP {exc.code}: {detail}") from exc
-    except (OSError, urllib.error.URLError) as exc:
-        raise RuntimeError(f"Higgs TTS request failed: {exc}") from exc
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes(audio)
-    return _validate_output(output_path, "Higgs TTS 3")
-
-
 def backend_runtime_status(project_root: Path) -> dict[str, str]:
     statuses: dict[str, str] = {}
 
@@ -980,14 +1051,4 @@ def backend_runtime_status(project_root: Path) -> dict[str, str]:
         else "Chatterbox runtime is incomplete; run setup_tts_models.ps1 -Backend chatterbox"
     )
 
-    higgs_model = project_root / ".work" / "hf-cache" / "hub" / "models--bosonai--higgs-audio-v3-tts-4b"
-    try:
-        image_ready = _docker_command(["image", "inspect", _HIGGS_DOCKER_IMAGE], check=False).returncode == 0
-    except RuntimeError:
-        image_ready = False
-    statuses["higgs"] = (
-        "ready (SGLang-Omni Docker image + Higgs v3 checkpoint installed)"
-        if image_ready and higgs_model.exists()
-        else "Higgs Docker runtime/model is incomplete; run setup_tts_models.ps1 -Backend higgs"
-    )
     return statuses
