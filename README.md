@@ -74,9 +74,22 @@ Create a run first:
 .\.venv\Scripts\python.exe main.py new-run --title "my story"
 ```
 
-Write the reviewed story to the printed folder's `story.md`, then generate the full video.
+Write the reviewed story to the printed folder's `story.md`. For unattended or scheduled production, enqueue the run instead of waiting for the heavy pipeline in the caller session:
 
-Gemini example:
+```powershell
+.\.venv\Scripts\python.exe main.py enqueue `
+  --run-dir runs\2026-08-16_16-27_my-story
+```
+
+`enqueue` returns immediately after writing a durable job and launching a detached worker. You can enqueue any number of runs. The worker processes them FIFO, exactly one at a time, and exits after the queue drains. Queue state and per-job logs live under `.work/video-queue/`.
+
+```powershell
+.\.venv\Scripts\python.exe main.py queue-status
+```
+
+Use `main.py run` only when you intentionally want a synchronous foreground generation, such as manual debugging.
+
+Gemini synchronous example:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py run `
@@ -86,7 +99,7 @@ Gemini example:
   --speaker-preset 1=Puck
 ```
 
-VibeVoice example:
+VibeVoice synchronous example:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py run `
@@ -96,7 +109,7 @@ VibeVoice example:
   --speaker-preset 1=Frank
 ```
 
-Default Fish example:
+Default Fish synchronous example:
 
 ```powershell
 .\.venv\Scripts\python.exe main.py run `
@@ -105,7 +118,7 @@ Default Fish example:
 
 The story metadata decides whether each slot uses the male or female default voice. Add `--speaker-preset ID=PRESET` only when you intentionally want to override that automatic casting.
 
-The same `run` command also creates `short.mp4` automatically when `story.md` contains `[[SHORTS_CLIFFHANGER]]`. There is no separate AI cliffhanger-selection step and no manual timestamp argument.
+Both queued and synchronous runs create `short.mp4` automatically when `story.md` contains `[[SHORTS_CLIFFHANGER]]`. There is no separate AI cliffhanger-selection step and no manual timestamp argument.
 
 `main.py list` shows existing runs, backgrounds, caption themes, VibeVoice presets, and saved Fish presets.
 
@@ -126,6 +139,7 @@ setup.ps1
 skills/
 reddit_video/
   pipeline.py
+  job_queue.py
   runs.py
   captions.py
   tts.py
