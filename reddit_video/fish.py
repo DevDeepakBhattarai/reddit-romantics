@@ -584,7 +584,7 @@ def generate_fish_s2(
     text: str,
     output_path: Path,
     *,
-    gpu_layers: int = 28,
+    gpu_layers: int = 20,
     temperature: float = 1.0,
     reference_audio: str | Path | None = None,
     reference_text: str = "",

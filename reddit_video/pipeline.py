@@ -51,7 +51,7 @@ class PipelineOptions:
     vibevoice_dtype: str = "auto"
     vibevoice_speaker_voices: dict[int, str] = field(default_factory=dict)
 
-    fish_gpu_layers: int = 28
+    fish_gpu_layers: int = 20
     fish_temperature: float = 1.0
     fish_reference_audio: str | Path | None = None
     fish_reference_text: str = ""

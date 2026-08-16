@@ -70,7 +70,7 @@ def _add_pipeline_args(parser: argparse.ArgumentParser, *, run_dir_required: boo
     parser.add_argument("--vibevoice-seed", type=int, default=42)
     parser.add_argument("--vibevoice-device", choices=["auto", "cuda", "cpu"], default="auto")
     parser.add_argument("--vibevoice-dtype", choices=["auto", "bfloat16", "float16", "float32"], default="auto")
-    parser.add_argument("--fish-gpu-layers", type=int, default=28)
+    parser.add_argument("--fish-gpu-layers", type=int, default=20)
     parser.add_argument("--fish-temperature", type=float, default=1.0)
     parser.add_argument("--fish-reference-audio")
     parser.add_argument("--fish-reference-text", default="")

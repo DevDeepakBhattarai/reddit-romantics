@@ -161,7 +161,7 @@ def build_ui() -> gr.Blocks:
                     gr.Markdown("### Fish Audio S2 Pro settings")
                     gr.Markdown("Native Windows **unquantized F16 hybrid** runtime.")
                     with gr.Row():
-                        fish_gpu_layers = gr.Slider(1, 36, value=28, step=1, label="CUDA transformer layers")
+                        fish_gpu_layers = gr.Slider(1, 36, value=20, step=1, label="CUDA transformer layers")
                         fish_temperature = gr.Slider(0.2, 1.5, value=1.0, step=0.05, label="Temperature")
                     fish_reference_audio = gr.File(
                         label="Optional default Fish reference voice WAV (single-speaker fallback)",

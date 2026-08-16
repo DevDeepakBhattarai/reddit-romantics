@@ -52,7 +52,7 @@ Only these three providers are maintained:
 
 - **Gemini TTS** - API-based narration, up to two speakers.
 - **Microsoft VibeVoice 1.5B** - local long-form narration with reusable presets.
-- **Fish Audio S2 Pro** - local native Windows `s2.cpp`, full unquantized F16 model, 28 CUDA transformer layers by default.
+- **Fish Audio S2 Pro** - local native Windows `s2.cpp`, full unquantized F16 model, 20 CUDA transformer layers by default.
 
 For Fish, production stories carry non-spoken `gender=male` / `gender=female` speaker metadata. The pipeline auto-casts male speakers to `Ethan` and female speakers to `Sarah`. `--speaker-preset ID=PRESET` is an optional override. Gemini and VibeVoice still require explicit per-speaker voices.
 
