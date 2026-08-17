@@ -5,13 +5,13 @@ description: Create a simple, clickable YouTube thumbnail for a finished Reddit-
 
 # Reddit Story Thumbnail
 
-Make the thumbnail from the finished story, not from the original premise. Read the final script first and find three things: the hook, one visual object or moment that represents the conflict, and the mood.
+Make the thumbnail from the finished story. Read the final script first and find three things: the hook, one visual object or moment that represents the conflict, and the mood.
 
 Keep the thumbnail simple. It should be understandable at feed size in less than a second.
 
 ## Default look
 
-Use a single Reddit-style post card as the main element. Put the story hook or a shorter version of it on the card. Pair it with at most one strong visual element from the story: a ring, phone, receipt, key, hospital bracelet, suitcase, text message, office badge, lipstick mark, photograph, red dress, or whatever object actually matters in that story.
+Use a single Reddit-style post card as the main element. Put the story hook or a shorter version of it on the card. Pair it with at most one strong visual element from the story
 
 Use a clean 16:9 YouTube composition with large readable text, strong contrast, generous empty space, and only a few colors. The card should be large enough to read on a phone. Do not fill the frame with interface details.
 
@@ -20,26 +20,6 @@ The image should sell the question, not reveal the answer. For revenge, show the
 For spicy romance or erotica stories, **do not carry the erotic content into the thumbnail at all.** The story may stay as explicit or emotionally charged as requested; this restriction applies only to the image. Translate the story into a mainstream, non-sexual YouTube visual using objects, setting, facial emotion, distance, jealousy, secrecy, or romantic atmosphere. Prefer things like a phone notification, two drinks, a ring, a party invitation, a closed doorway, a city window, a suitcase, or fully clothed adults in an ordinary social setting.
 
 Never ask the image model for nudity, lingerie-focused imagery, partially undressed people, bedroom intimacy, kissing, straddling, sexual touching, erotic posing, fetish imagery, body-part emphasis, or any composition whose appeal depends on sexualization. Do not try to make the thumbnail "as spicy as possible." When the source story is erotic, deliberately make the thumbnail more conservative and let the title and story premise create the intrigue.
-
-## Title text
-
-Use the story's hook as the starting point, but shorten it if necessary. Aim for roughly six to ten words when the full line is too long for a thumbnail.
-
-Keep the concrete part that makes the situation unusual.
-
-Do not use tiny paragraphs, several competing captions, excessive punctuation, or a full Reddit post body. One strong title is enough.
-
-## Generate it
-
-If an image-generation tool is available and the user asked for a thumbnail, generate the image rather than only describing it.
-
-Give the image model the complete visual instruction in one clean prompt: 16:9 YouTube thumbnail, one Reddit-style card, exact card title, one story-specific visual element, the intended mood, and a simple uncluttered composition.
-
-For spicy stories, explicitly instruct the image model that the visual must be non-erotic, fully clothed, non-sexualized, and safe for a mainstream YouTube thumbnail. Favor objects and atmosphere over physical intimacy.
-
-Do not add multiple cards, arrows everywhere, reaction faces that are not part of the story, random stock imagery, or visual elements that spoil the reveal.
-
-Before returning the thumbnail, check that the title is readable and spelled correctly, that there is only one clear focal idea, that nothing reveals the story's final twist or payoff, and that any spicy-story thumbnail remains visually non-erotic.
 
 ## Automation artifact
 

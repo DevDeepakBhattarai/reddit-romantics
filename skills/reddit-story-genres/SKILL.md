@@ -3,10 +3,6 @@ name: reddit-story-genres
 description: Choose and shape the emotional engine of a Reddit-style story. Use when generating revenge, spicy romance, betrayal, confession, family drama, workplace drama, suspense, or horror, or when the requested story needs a clearer genre-specific rise and payoff.
 ---
 
-# Reddit Story Genres
-
-Pick one main story engine and commit to it. A story can borrow elements from another genre, but it should still feel like one clear kind of story rather than several plots fighting each other.
-
 ## Revenge comeback
 
 Make the fall hurt before the comeback feels good.
@@ -76,9 +72,3 @@ Let the narrator explain it away at first. Then introduce another detail that ma
 Do not bury the story under lore. Keep the rules simple enough to follow by ear. Horror gets stronger when the narrator knows just enough to be afraid but not enough to feel safe.
 
 The ending can reveal the truth, reveal only part of it, or leave one final detail that makes the whole story feel worse.
-
-## Choosing when the user does not
-
-Use the request's emotional promise. Humiliation plus preparation usually wants revenge. Strong attraction plus risk wants spicy romance. A broken promise wants betrayal. A guilty narrator wants confession. A contested family resource wants family drama. Career power wants workplace drama. An unexplained threat wants suspense or horror.
-
-Do not force every story into betrayal just because it is easy to write.
