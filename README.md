@@ -81,7 +81,7 @@ Write the reviewed story to the printed folder's `story.md`. For unattended or s
   --run-dir runs\2026-08-16_16-27_my-story
 ```
 
-`enqueue` returns immediately after writing a durable job and launching a detached worker. You can enqueue any number of runs. The worker processes them FIFO, exactly one at a time, and exits after the queue drains. Queue state and per-job logs live under `.work/video-queue/`.
+`enqueue` ensures a detached worker is alive, sends the run to that worker's in-memory FIFO queue over localhost IPC, and returns immediately. You can enqueue any number of runs while that worker is alive, and it processes exactly one video at a time. When the queue drains the worker exits; its queue disappears with it. A later worker always starts with an empty queue, so stale jobs are never recovered after a crash or restart. Per-job logs remain under `.work/video-queue/logs/`, but pending/running queue state is not persisted.
 
 ```powershell
 .\.venv\Scripts\python.exe main.py queue-status

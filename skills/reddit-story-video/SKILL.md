@@ -19,9 +19,9 @@ Long video generation must not run inside the ChatGPT/scheduled-task session. En
 
 `.\.venv\Scripts\python.exe main.py enqueue --run-dir <existing-run>`
 
-`enqueue` is intentionally fast. It writes a durable job under `.work/video-queue/`, launches a detached queue worker, and exits. **Do not wait for the video to finish, do not poll the worker, and do not replace `enqueue` with the synchronous `run` command in scheduled production.** Once every intended run has been enqueued successfully, the AI task is complete and should end.
+`enqueue` is intentionally fast. It ensures a detached worker exists, sends the run into that worker's in-memory FIFO queue, and exits. **Do not wait for the video to finish, do not poll the worker, and do not replace `enqueue` with the synchronous `run` command in scheduled production.** Once every intended run has been enqueued successfully, the AI task is complete and should end.
 
-There may be any number of queued runs. A single worker owns the queue and processes them FIFO, exactly one video pipeline at a time. This prevents two Fish/WhisperX/render jobs from competing for the same machine. When the queue has been drained, the worker exits by itself. A failed job is recorded under `.work/video-queue/failed/` and does not prevent later queued jobs from running.
+There may be any number of queued runs while the worker is alive. A single worker owns an in-memory FIFO queue and runs exactly one video pipeline at a time. This prevents two Fish/WhisperX/render jobs from competing for the same machine. When the queue has been drained, the worker exits by itself and the queue is destroyed. If the worker crashes or is killed, every pending queue item dies with it; the next worker always starts empty. Failed-job details remain in the worker/job logs and do not prevent later in-memory jobs from running.
 
 Use `.\.venv\Scripts\python.exe main.py queue-status` only when a user explicitly asks to inspect queue state; scheduled production should not sit around monitoring it.
 
