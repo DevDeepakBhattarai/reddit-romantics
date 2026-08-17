@@ -242,14 +242,17 @@ def main() -> int:
         # Preserve the exact pipeline arguments. The worker parses these as a normal `run`
         # command later, so enqueueing stays fast and does not initialize any heavy models.
         run_args = sys.argv[2:]
-        job, created = queue.enqueue(args.run_dir, run_args)
-        worker_pid = queue.start_detached_worker(Path(__file__))
+        job, created, worker_pid = queue.enqueue(
+            args.run_dir,
+            run_args,
+            main_script=Path(__file__),
+        )
         if created:
             print(f"Queued video job {job['id']} for {job['run_dir']}")
         else:
             print(f"Run is already queued as {job['id']}: {job['run_dir']}")
-        print(f"Detached queue worker launch PID: {worker_pid}")
-        print("The worker will process queued jobs one at a time and exit after the queue is empty.")
+        print(f"Detached queue worker started: PID {worker_pid}")
+        print("The worker owns an in-memory FIFO queue, processes one job at a time, and discards the queue when it exits.")
         return 0
     if args.command == "queue-worker":
         return VideoJobQueue(ROOT).run_worker(_run_queued_job)
