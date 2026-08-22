@@ -15,6 +15,8 @@ Decide the story type first. Use `reddit-story-genres` skill for the genre behav
 
 Then write the complete story.
 
+For production stories, ten minutes of finished narration is the minimum, not the target. Before finalizing, make sure the script contains at least 1,700 spoken words after excluding speaker tags, casting metadata, performance cues, and other non-spoken production markers. Aim for roughly 1,700 to 2,000 spoken words, and go longer when the pacing or pauses would otherwise bring the finished audio under ten minutes.
+
 The first spoken line matters more than any other line. The viewer may give the video only a couple of seconds before scrolling. So, I want you to use this information gap theory to create a compelling hook for the story. The hook has to be very easy to digest and actually grasp the idea from. Make sure it gives just the right amount of information to make the listener curious, but not too much that they can guess the ending.
 
 ```
